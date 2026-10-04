@@ -1,0 +1,30 @@
+[project]
+name = "almacen-movil-raidel"
+version = "1.0.0"
+description = "Almacén Raidel — multi-local (Flet 1.0+)"
+dependencies = [
+    "flet==1.0.3",
+    "openpyxl"
+]
+
+[tool.flet]
+product_name = "Almacén Raidel"
+package_name = "com.combosflash.almacen_raidel"
+icon = "recursos/icon.png"
+assets = ["recursos"]
+
+[tool.flet.icons]
+android = "recursos/icon.png"
+
+# ─── SPLASH SCREEN (opcional) ───────────────────────────────
+# Cuando tengas la imagen, colócala en recursos/splash.png
+# y descomenta el bloque de abajo. Aparecerá como pantalla
+# de carga nativa durante el arranque del APK en Android.
+#
+# [tool.flet.splash]
+# color = "#0a0a0a"
+# dark_color = "#0a0a0a"
+# android = true
+# ios = false
+# web = false
+# ─────────────────────────────────────────────────────────────

@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Flet runtime
+.flet/
+
+# Entornos virtuales
+venv/
+env/
+.venv/
+my_android/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Datos de runtime (se recrean solos)
+datos/
+backups/
+logs/
+almacen.db*
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Salidas de prueba
+test_excel_salida.xlsx
+
+# OS
+.DS_Store
+Thumbs.db
