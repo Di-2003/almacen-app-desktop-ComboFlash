@@ -92,7 +92,6 @@ def abrir_detalle_producto(app, prod, on_refresh=None):
 
     contenido = [cabecera, ft.Container(height=2), stats]
 
-    # -------- Producto INACTIVO --------
     if not esta_activo and puede_operar and not es_general:
         def reactivar(e):
             cerrar_dialogo(page)
@@ -135,7 +134,6 @@ def abrir_detalle_producto(app, prod, on_refresh=None):
         ))
         return
 
-    # -------- Producto ACTIVO --------
     if puede_operar and not es_general:
         def ent(e):
             cerrar_dialogo(page)
@@ -317,8 +315,9 @@ def modal_entrada(app, producto=None, on_refresh=None):
         keyboard_type=ft.KeyboardType.NUMBER,
         **es.estilo_textfield(12), height=54,
     )
+    # Label con formato pero sin la hora (evita wrap a 2 líneas)
     tf_fecha = ft.TextField(
-        label="Fecha y hora (YYYY-MM-DD HH:MM:SS)",
+        label="Fecha y hora (YYYY-MM-DD)",
         value=_ahora_str(),
         **es.estilo_textfield(12), height=54,
     )
@@ -452,7 +451,18 @@ def modal_entrada(app, producto=None, on_refresh=None):
     dlg = ft.AlertDialog(
         title=ft.Text("Registrar entrada"),
         content=ft.Column(
-            [tf_p, tf_cod, tf_c, tf_pc, tf_pu, tf_fecha, lbl, error_lbl],
+            [
+                tf_p,
+                tf_cod,
+                tf_c,
+                tf_pc,
+                tf_pu,
+                # Separación extra entre el último precio y la fecha
+                ft.Container(height=10),
+                tf_fecha,
+                lbl,
+                error_lbl,
+            ],
             tight=True, spacing=10, width=340,
             scroll=ft.ScrollMode.AUTO,
         ),
@@ -499,8 +509,9 @@ def modal_salida(app, producto=None, on_refresh=None):
         keyboard_type=ft.KeyboardType.NUMBER,
         **es.estilo_textfield(12), height=54,
     )
+    # Label con formato pero sin la hora (evita wrap a 2 líneas)
     tf_fecha = ft.TextField(
-        label="Fecha y hora (YYYY-MM-DD HH:MM:SS)",
+        label="Fecha y hora (YYYY-MM-DD)",
         value=_ahora_str(),
         **es.estilo_textfield(12), height=54,
     )
@@ -615,7 +626,17 @@ def modal_salida(app, producto=None, on_refresh=None):
     dlg = ft.AlertDialog(
         title=ft.Text("Registrar salida"),
         content=ft.Column(
-            [tf_p, tf_c, tf_motivo, tf_rebaja, tf_fecha, lbl, error_lbl],
+            [
+                tf_p,
+                tf_c,
+                tf_motivo,
+                tf_rebaja,
+                # Separación extra entre el último campo y la fecha
+                ft.Container(height=10),
+                tf_fecha,
+                lbl,
+                error_lbl,
+            ],
             tight=True, spacing=10, width=340,
             scroll=ft.ScrollMode.AUTO,
         ),
@@ -773,7 +794,6 @@ def modal_traspaso(app, producto=None, on_refresh=None):
 # ============ diálogos de edición ============
 
 def _dlg_precio(app, prod, cual: str, on_refresh=None):
-    """`cual` = 'costo' o 'venta'."""
     page = app.page
     campo = "precio_costo" if cual == "costo" else "precio_unitario"
     titulo = "Precio costo" if cual == "costo" else "Precio venta"
