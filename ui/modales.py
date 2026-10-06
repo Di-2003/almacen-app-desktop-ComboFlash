@@ -3,18 +3,21 @@ Diálogos y bottom sheets de la app.
 
 Contiene:
   - Detalle de producto (bottom sheet) con todas las acciones
-  - Modal de entrada
-  - Modal de salida (con motivo libre + rebaja)
+  - Modal de entrada (con fecha/hora y autocompletado)
+  - Modal de salida (con fecha/hora)
   - Modal de traspaso entre locales
-  - Diálogos: precio costo, precio venta, código, renombrar, umbrales, baja
+  - Diálogos: precio costo, precio venta (con monedas),
+    código, renombrar, umbrales, baja, reactivar
 """
+from datetime import datetime
 import flet as ft
 import inventario as inv
 import locales as loc
 from db import GENERAL_ID
 from ui import estilos as es
 from ui.componentes import (
-    chip_estado, snack, caja_info, bottom_sheet, cursor_al_final,
+    chip_estado, chip_inactivo, snack, caja_info, bottom_sheet,
+    cursor_al_final, cerrar_dialogo,
 )
 
 
@@ -39,6 +42,10 @@ def _mensaje_movimiento(info: dict, accion: str,
     return (f"{accion}: {nombre} {delta}", "ok")
 
 
+def _ahora_str() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
 # ============ detalle de producto (bottom sheet) ============
 
 def abrir_detalle_producto(app, prod, on_refresh=None):
@@ -49,6 +56,7 @@ def abrir_detalle_producto(app, prod, on_refresh=None):
     rol = app.usuario["rol"]
     puede_operar = rol in ("admin", "almacen")
     es_general = app.es_general() or prod.get("id") is None
+    esta_activo = prod.get("activo", 1) == 1
 
     cabecera = ft.Row(
         [
@@ -68,7 +76,7 @@ def abrir_detalle_producto(app, prod, on_refresh=None):
                 ],
                 spacing=1, expand=True,
             ),
-            chip_estado(color),
+            chip_estado(color) if esta_activo else chip_inactivo(),
         ],
         vertical_alignment=ft.CrossAxisAlignment.START,
     )
@@ -84,41 +92,85 @@ def abrir_detalle_producto(app, prod, on_refresh=None):
 
     contenido = [cabecera, ft.Container(height=2), stats]
 
+    # -------- Producto INACTIVO --------
+    if not esta_activo and puede_operar and not es_general:
+        def reactivar(e):
+            cerrar_dialogo(page)
+            try:
+                inv.reactivar_producto(prod["id"], app.usuario)
+                snack(page, f"{prod['nombre']} reactivado", "ok")
+                if on_refresh:
+                    on_refresh()
+            except Exception as ex:
+                snack(page, str(ex), "error")
+
+        contenido += [
+            ft.Container(height=6),
+            caja_info(
+                "Este producto está dado de baja en este local. "
+                "Reactívalo para volver a operarlo.", "warn"),
+            ft.Container(height=6),
+            ft.Container(
+                content=ft.Row(
+                    [
+                        ft.Icon(ft.Icons.RESTORE,
+                                color="white", size=20),
+                        ft.Text("Reactivar producto", size=14,
+                                color="white",
+                                weight=ft.FontWeight.W_600),
+                    ],
+                    spacing=10,
+                    alignment=ft.MainAxisAlignment.CENTER,
+                ),
+                padding=ft.Padding.symmetric(vertical=14),
+                bgcolor=es.COLOR_EXITO,
+                border_radius=12,
+                on_click=reactivar, ink=True,
+                alignment=ft.Alignment.CENTER,
+            ),
+        ]
+        page.show_dialog(bottom_sheet(
+            ft.Column(contenido, spacing=6, tight=True),
+            page=page,
+        ))
+        return
+
+    # -------- Producto ACTIVO --------
     if puede_operar and not es_general:
         def ent(e):
-            page.pop_dialog()
+            cerrar_dialogo(page)
             modal_entrada(app, producto=prod, on_refresh=on_refresh)
 
         def sal(e):
-            page.pop_dialog()
+            cerrar_dialogo(page)
             modal_salida(app, producto=prod, on_refresh=on_refresh)
 
         def trasp(e):
-            page.pop_dialog()
+            cerrar_dialogo(page)
             modal_traspaso(app, producto=prod, on_refresh=on_refresh)
 
         def pr_costo(e):
-            page.pop_dialog()
+            cerrar_dialogo(page)
             _dlg_precio_costo(app, prod, on_refresh)
 
         def pr_venta(e):
-            page.pop_dialog()
+            cerrar_dialogo(page)
             _dlg_precio_venta(app, prod, on_refresh)
 
         def cod(e):
-            page.pop_dialog()
+            cerrar_dialogo(page)
             _dlg_codigo(app, prod, on_refresh)
 
         def ren(e):
-            page.pop_dialog()
+            cerrar_dialogo(page)
             _dlg_renombrar(app, prod, on_refresh)
 
         def umb(e):
-            page.pop_dialog()
+            cerrar_dialogo(page)
             _dlg_umbrales(app, prod, on_refresh)
 
         def baja(e):
-            page.pop_dialog()
+            cerrar_dialogo(page)
             _conf_baja(app, prod, on_refresh)
 
         contenido += [
@@ -172,12 +224,13 @@ def abrir_detalle_producto(app, prod, on_refresh=None):
     else:
         contenido += [
             ft.Container(height=4),
-            caja_info("Modo solo lectura: no puedes operar el stock.", "info"),
+            caja_info("Modo solo lectura: no puedes operar el stock.",
+                      "info"),
         ]
 
     page.show_dialog(bottom_sheet(
         ft.Column(contenido, spacing=6, tight=True),
-        page = page,
+        page=page,
     ))
 
 
@@ -264,7 +317,14 @@ def modal_entrada(app, producto=None, on_refresh=None):
         keyboard_type=ft.KeyboardType.NUMBER,
         **es.estilo_textfield(12), height=54,
     )
+    tf_fecha = ft.TextField(
+        label="Fecha y hora (YYYY-MM-DD HH:MM:SS)",
+        value=_ahora_str(),
+        **es.estilo_textfield(12), height=54,
+    )
     lbl = ft.Container()
+    error_lbl = ft.Text("", color=es.COLOR_PELIGRO, size=12)
+    dlg_ref = {"dlg": None}
 
     def upd(e=None):
         n = (tf_p.value or "").strip()
@@ -273,7 +333,14 @@ def modal_entrada(app, producto=None, on_refresh=None):
         else:
             p = inv.buscar_producto_por_nombre(n, app.local_id)
             if p is None:
-                lbl.content = caja_info("✨ Producto nuevo.", "info")
+                pg = inv.buscar_producto_global_por_nombre(n)
+                if pg:
+                    lbl.content = caja_info(
+                        f"Existe en «{pg['local_nombre']}». "
+                        f"Se creará en este local.", "info")
+                else:
+                    lbl.content = caja_info("✨ Producto nuevo.",
+                                            "info")
             else:
                 lbl.content = caja_info(
                     f"Stock actual: {inv.fmt_cantidad(p['stock'])}",
@@ -283,16 +350,71 @@ def modal_entrada(app, producto=None, on_refresh=None):
         except Exception:
             pass
 
-    tf_p.on_change = upd
+    def autocompletar_desde_codigo(e):
+        cod = (tf_cod.value or "").strip()
+        if not cod:
+            return
+        p = inv.buscar_producto_por_codigo(cod, app.local_id)
+        if p is not None:
+            if not (tf_p.value or "").strip():
+                tf_p.value = p["nombre"]
+            lbl.content = caja_info(
+                f"Stock actual: {inv.fmt_cantidad(p['stock'])}", "info")
+        else:
+            pg = inv.buscar_producto_global_por_codigo(cod)
+            if pg:
+                if not (tf_p.value or "").strip():
+                    tf_p.value = pg["nombre"]
+                lbl.content = caja_info(
+                    f"Existe en «{pg['local_nombre']}». "
+                    f"Se creará en este local.", "info")
+        try:
+            lbl.update()
+            page.update()
+        except Exception:
+            pass
+
+    def autocompletar_desde_nombre(e):
+        nom = (tf_p.value or "").strip()
+        if not nom:
+            return
+        p = inv.buscar_producto_por_nombre(nom, app.local_id)
+        if p is not None:
+            if not (tf_cod.value or "").strip():
+                tf_cod.value = p.get("codigo") or ""
+            lbl.content = caja_info(
+                f"Stock actual: {inv.fmt_cantidad(p['stock'])}", "info")
+        else:
+            pg = inv.buscar_producto_global_por_nombre(nom)
+            if pg:
+                if not (tf_cod.value or "").strip():
+                    tf_cod.value = pg.get("codigo") or ""
+                lbl.content = caja_info(
+                    f"Existe en «{pg['local_nombre']}». "
+                    f"Se creará en este local.", "info")
+        try:
+            lbl.update()
+            page.update()
+        except Exception:
+            pass
+
+    tf_p.on_change = autocompletar_desde_nombre
+    tf_cod.on_change = autocompletar_desde_codigo
     tf_p.on_focus = cursor_al_final
     upd()
 
     def guardar(e):
+        error_lbl.value = ""
         n = (tf_p.value or "").strip()
+        if not n:
+            error_lbl.value = "El nombre del producto no puede estar vacío"
+            page.update()
+            return
         try:
             c = float((tf_c.value or "").replace(",", "."))
         except ValueError:
-            snack(page, "Cantidad inválida", "error")
+            error_lbl.value = "Cantidad inválida"
+            page.update()
             return
         codigo = (tf_cod.value or "").strip() or None
         try:
@@ -303,33 +425,40 @@ def modal_entrada(app, producto=None, on_refresh=None):
             pu = float((tf_pu.value or "0").replace(",", ".")) or None
         except ValueError:
             pu = None
+        fecha = (tf_fecha.value or "").strip() or None
 
         try:
             info = inv.registrar_entrada(
                 nombre=n, cantidad=c,
                 usuario=app.usuario, local_id=app.local_id,
                 codigo=codigo, precio_costo=pc, precio_unitario=pu,
+                fecha=fecha,
             )
         except Exception as ex:
-            snack(page, str(ex), "error")
+            error_lbl.value = str(ex)
+            page.update()
             return
-        page.pop_dialog()
+
         texto, tipo = _mensaje_movimiento(
             info, "Entrada", f"+{inv.fmt_cantidad(c)}")
-        snack(page, texto, tipo)
-        if on_refresh:
-            on_refresh()
+
+        def _despues():
+            snack(page, texto, tipo)
+            if on_refresh:
+                on_refresh()
+
+        cerrar_dialogo(page, dlg_ref["dlg"], on_close=_despues)
 
     dlg = ft.AlertDialog(
         title=ft.Text("Registrar entrada"),
         content=ft.Column(
-            [tf_p, tf_cod, tf_c, tf_pc, tf_pu, lbl],
+            [tf_p, tf_cod, tf_c, tf_pc, tf_pu, tf_fecha, lbl, error_lbl],
             tight=True, spacing=10, width=340,
             scroll=ft.ScrollMode.AUTO,
         ),
         actions=[
             ft.TextButton("Cancelar",
-                          on_click=lambda e: page.pop_dialog()),
+                          on_click=lambda e: cerrar_dialogo(page, dlg_ref["dlg"])),
             ft.FilledButton(
                 "Guardar", on_click=guardar,
                 style=ft.ButtonStyle(
@@ -340,6 +469,7 @@ def modal_entrada(app, producto=None, on_refresh=None):
         ],
         actions_alignment=ft.MainAxisAlignment.END,
     )
+    dlg_ref["dlg"] = dlg
     page.show_dialog(dlg)
 
 
@@ -369,7 +499,14 @@ def modal_salida(app, producto=None, on_refresh=None):
         keyboard_type=ft.KeyboardType.NUMBER,
         **es.estilo_textfield(12), height=54,
     )
+    tf_fecha = ft.TextField(
+        label="Fecha y hora (YYYY-MM-DD HH:MM:SS)",
+        value=_ahora_str(),
+        **es.estilo_textfield(12), height=54,
+    )
     lbl = ft.Container()
+    error_lbl = ft.Text("", color=es.COLOR_PELIGRO, size=12)
+    dlg_ref = {"dlg": None}
 
     def upd(e=None):
         n = (tf_p.value or "").strip()
@@ -409,57 +546,82 @@ def modal_salida(app, producto=None, on_refresh=None):
         except Exception:
             pass
 
-    tf_p.on_change = upd
+    def autocompletar_desde_nombre(e):
+        nom = (tf_p.value or "").strip()
+        if not nom:
+            return
+        p = inv.buscar_producto_por_nombre(nom, app.local_id)
+        if p is not None:
+            if not (tf_motivo.value or "").strip():
+                tf_motivo.value = inv.motivo_default_salida()
+        upd()
+        page.update()
+
+    tf_p.on_change = autocompletar_desde_nombre
     tf_c.on_change = upd
     tf_rebaja.on_change = upd
     tf_p.on_focus = cursor_al_final
     upd()
 
     def guardar(e):
+        error_lbl.value = ""
         n = (tf_p.value or "").strip()
+        if not n:
+            error_lbl.value = "Selecciona un producto"
+            page.update()
+            return
         try:
             c = float((tf_c.value or "").replace(",", "."))
         except ValueError:
-            snack(page, "Cantidad inválida", "error")
+            error_lbl.value = "Cantidad inválida"
+            page.update()
             return
         try:
             reb = float((tf_rebaja.value or "0").replace(",", "."))
         except ValueError:
             reb = 0.0
         motivo = (tf_motivo.value or "").strip() or None
+        fecha = (tf_fecha.value or "").strip() or None
 
         try:
             info = inv.registrar_salida(
                 nombre_o_codigo=n, cantidad=c,
                 usuario=app.usuario, local_id=app.local_id,
-                motivo=motivo, rebaja=reb,
+                motivo=motivo, rebaja=reb, fecha=fecha,
             )
         except inv.StockInsuficiente as ex:
-            snack(page, str(ex), "error")
+            error_lbl.value = str(ex)
+            page.update()
             return
         except inv.ProductoNoExiste as ex:
-            snack(page, str(ex), "error")
+            error_lbl.value = str(ex)
+            page.update()
             return
         except Exception as ex:
-            snack(page, str(ex), "error")
+            error_lbl.value = str(ex)
+            page.update()
             return
-        page.pop_dialog()
+
         texto, tipo = _mensaje_movimiento(
             info, "Salida", f"-{inv.fmt_cantidad(c)}")
-        snack(page, texto, tipo)
-        if on_refresh:
-            on_refresh()
+
+        def _despues():
+            snack(page, texto, tipo)
+            if on_refresh:
+                on_refresh()
+
+        cerrar_dialogo(page, dlg_ref["dlg"], on_close=_despues)
 
     dlg = ft.AlertDialog(
         title=ft.Text("Registrar salida"),
         content=ft.Column(
-            [tf_p, tf_c, tf_motivo, tf_rebaja, lbl],
+            [tf_p, tf_c, tf_motivo, tf_rebaja, tf_fecha, lbl, error_lbl],
             tight=True, spacing=10, width=340,
             scroll=ft.ScrollMode.AUTO,
         ),
         actions=[
             ft.TextButton("Cancelar",
-                          on_click=lambda e: page.pop_dialog()),
+                          on_click=lambda e: cerrar_dialogo(page, dlg_ref["dlg"])),
             ft.FilledButton(
                 "Guardar", on_click=guardar,
                 style=ft.ButtonStyle(
@@ -470,6 +632,7 @@ def modal_salida(app, producto=None, on_refresh=None):
         ],
         actions_alignment=ft.MainAxisAlignment.END,
     )
+    dlg_ref["dlg"] = dlg
     page.show_dialog(dlg)
 
 
@@ -504,10 +667,12 @@ def modal_traspaso(app, producto=None, on_refresh=None):
         **es.borde_textfield(12),
     )
     lbl = ft.Container()
+    error_lbl = ft.Text("", color=es.COLOR_PELIGRO, size=12)
     lbl_origen = ft.Text(
         f"Origen: {loc.nombre_local(app.local_id)}",
         size=12, color=es.COLOR_TEXTO_SUAVE,
     )
+    dlg_ref = {"dlg": None}
 
     def upd(e=None):
         n = (tf_p.value or "").strip()
@@ -543,15 +708,22 @@ def modal_traspaso(app, producto=None, on_refresh=None):
     upd()
 
     def guardar(e):
+        error_lbl.value = ""
         n = (tf_p.value or "").strip()
+        if not n:
+            error_lbl.value = "Selecciona un producto"
+            page.update()
+            return
         try:
             c = float((tf_c.value or "").replace(",", "."))
         except ValueError:
-            snack(page, "Cantidad inválida", "error")
+            error_lbl.value = "Cantidad inválida"
+            page.update()
             return
         dest_id = dd_dest.value
         if not dest_id:
-            snack(page, "Selecciona destino", "error")
+            error_lbl.value = "Selecciona destino"
+            page.update()
             return
         try:
             inv.registrar_traspaso(
@@ -561,23 +733,29 @@ def modal_traspaso(app, producto=None, on_refresh=None):
                 local_destino_id=int(dest_id),
             )
         except Exception as ex:
-            snack(page, str(ex), "error")
+            error_lbl.value = str(ex)
+            page.update()
             return
-        page.pop_dialog()
-        snack(page, f"Traspaso: {n} -{inv.fmt_cantidad(c)}", "ok")
-        if on_refresh:
-            on_refresh()
+
+        txt = f"Traspaso: {n} -{inv.fmt_cantidad(c)}"
+
+        def _despues():
+            snack(page, txt, "ok")
+            if on_refresh:
+                on_refresh()
+
+        cerrar_dialogo(page, dlg_ref["dlg"], on_close=_despues)
 
     dlg = ft.AlertDialog(
         title=ft.Text("Traspaso entre locales"),
         content=ft.Column(
-            [lbl_origen, tf_p, tf_c, dd_dest, lbl],
+            [lbl_origen, tf_p, tf_c, dd_dest, lbl, error_lbl],
             tight=True, spacing=10, width=340,
             scroll=ft.ScrollMode.AUTO,
         ),
         actions=[
             ft.TextButton("Cancelar",
-                          on_click=lambda e: page.pop_dialog()),
+                          on_click=lambda e: cerrar_dialogo(page, dlg_ref["dlg"])),
             ft.FilledButton(
                 "Traspasar", on_click=guardar,
                 style=ft.ButtonStyle(
@@ -588,81 +766,108 @@ def modal_traspaso(app, producto=None, on_refresh=None):
         ],
         actions_alignment=ft.MainAxisAlignment.END,
     )
+    dlg_ref["dlg"] = dlg
     page.show_dialog(dlg)
 
 
 # ============ diálogos de edición ============
 
-def _dlg_precio_costo(app, prod, on_refresh=None):
+def _dlg_precio(app, prod, cual: str, on_refresh=None):
+    """`cual` = 'costo' o 'venta'."""
     page = app.page
+    campo = "precio_costo" if cual == "costo" else "precio_unitario"
+    titulo = "Precio costo" if cual == "costo" else "Precio venta"
+    valor_actual = float(prod.get(campo, 0) or 0)
+
     tf = ft.TextField(
-        label="Precio costo",
-        value=str(float(prod.get("precio_costo", 0) or 0)),
+        label=titulo,
+        value=str(valor_actual),
         keyboard_type=ft.KeyboardType.NUMBER,
         **es.estilo_textfield(12), height=54,
     )
 
-    def guardar(e):
-        try:
-            inv.set_precio_costo(
-                prod["id"],
-                float((tf.value or "0").replace(",", ".")),
-                usuario=app.usuario)
-        except Exception as ex:
-            snack(page, str(ex), "error")
-            return
-        page.pop_dialog()
-        snack(page, "Precio costo actualizado (propagado)", "ok")
-        if on_refresh:
-            on_refresh()
+    dd_moneda = ft.Dropdown(
+        label="Moneda del valor",
+        value="CUP",
+        options=[
+            ft.DropdownOption(key="CUP", text="$"),
+            ft.DropdownOption(key="USD", text="USD$"),
+            ft.DropdownOption(key="EUR", text="€"),
+        ],
+        **es.borde_textfield(12),
+    )
 
-    page.show_dialog(ft.AlertDialog(
-        title=ft.Text(f"Precio costo: {prod['nombre']}"),
-        content=ft.Column([tf], tight=True, width=300),
+    tasa_usd = inv.get_tasa_usd()
+    tasa_eur = inv.get_tasa_eur()
+    lbl_tasas = ft.Text(
+        f"Tasas: 1 USD = {tasa_usd:.2f} CUP  ·  "
+        f"1 EUR = {tasa_eur:.2f} CUP",
+        size=11, color=es.COLOR_TEXTO_SUAVE,
+    )
+    error_lbl = ft.Text("", color=es.COLOR_PELIGRO, size=12)
+    dlg_ref = {"dlg": None}
+
+    def guardar(e):
+        error_lbl.value = ""
+        try:
+            valor = float((tf.value or "0").replace(",", "."))
+        except ValueError:
+            error_lbl.value = "Valor inválido"
+            page.update()
+            return
+        if valor < 0:
+            error_lbl.value = "El precio no puede ser negativo"
+            page.update()
+            return
+
+        tasa = inv.get_tasa(dd_moneda.value)
+        valor_cup = valor * tasa
+
+        try:
+            if cual == "costo":
+                inv.set_precio_costo(prod["id"], valor_cup,
+                                     usuario=app.usuario)
+            else:
+                inv.set_precio_unitario(prod["id"], valor_cup,
+                                        usuario=app.usuario)
+        except Exception as ex:
+            error_lbl.value = str(ex)
+            page.update()
+            return
+
+        msg = (f"{titulo} actualizado (propagado). "
+               f"Guardado como ${valor_cup:,.2f} CUP")
+
+        def _despues():
+            snack(page, msg, "ok")
+            if on_refresh:
+                on_refresh()
+
+        cerrar_dialogo(page, dlg_ref["dlg"], on_close=_despues)
+
+    dlg = ft.AlertDialog(
+        title=ft.Text(f"{titulo}: {prod['nombre']}"),
+        content=ft.Column(
+            [tf, dd_moneda, lbl_tasas, error_lbl],
+            tight=True, width=340, spacing=10),
         actions=[
             ft.TextButton("Cancelar",
-                          on_click=lambda e: page.pop_dialog()),
+                          on_click=lambda e: cerrar_dialogo(page, dlg_ref["dlg"])),
             ft.FilledButton("Guardar", on_click=guardar,
                             style=es.estilo_boton_marca()),
         ],
         actions_alignment=ft.MainAxisAlignment.END,
-    ))
+    )
+    dlg_ref["dlg"] = dlg
+    page.show_dialog(dlg)
+
+
+def _dlg_precio_costo(app, prod, on_refresh=None):
+    _dlg_precio(app, prod, "costo", on_refresh)
 
 
 def _dlg_precio_venta(app, prod, on_refresh=None):
-    page = app.page
-    tf = ft.TextField(
-        label="Precio venta",
-        value=str(float(prod.get("precio_unitario", 0) or 0)),
-        keyboard_type=ft.KeyboardType.NUMBER,
-        **es.estilo_textfield(12), height=54,
-    )
-
-    def guardar(e):
-        try:
-            inv.set_precio_unitario(
-                prod["id"],
-                float((tf.value or "0").replace(",", ".")),
-                usuario=app.usuario)
-        except Exception as ex:
-            snack(page, str(ex), "error")
-            return
-        page.pop_dialog()
-        snack(page, "Precio venta actualizado (propagado)", "ok")
-        if on_refresh:
-            on_refresh()
-
-    page.show_dialog(ft.AlertDialog(
-        title=ft.Text(f"Precio venta: {prod['nombre']}"),
-        content=ft.Column([tf], tight=True, width=300),
-        actions=[
-            ft.TextButton("Cancelar",
-                          on_click=lambda e: page.pop_dialog()),
-            ft.FilledButton("Guardar", on_click=guardar,
-                            style=es.estilo_boton_marca()),
-        ],
-        actions_alignment=ft.MainAxisAlignment.END,
-    ))
+    _dlg_precio(app, prod, "venta", on_refresh)
 
 
 def _dlg_codigo(app, prod, on_refresh=None):
@@ -673,19 +878,26 @@ def _dlg_codigo(app, prod, on_refresh=None):
         **es.estilo_textfield(12), height=54,
     )
     tf.on_focus = cursor_al_final
+    error_lbl = ft.Text("", color=es.COLOR_PELIGRO, size=12)
+    dlg_ref = {"dlg": None}
 
     def guardar(e):
+        error_lbl.value = ""
         try:
             inv.set_codigo(prod["id"], tf.value, usuario=app.usuario)
         except Exception as ex:
-            snack(page, str(ex), "error")
+            error_lbl.value = str(ex)
+            page.update()
             return
-        page.pop_dialog()
-        snack(page, "Código actualizado (propagado)", "ok")
-        if on_refresh:
-            on_refresh()
 
-    page.show_dialog(ft.AlertDialog(
+        def _despues():
+            snack(page, "Código actualizado (propagado)", "ok")
+            if on_refresh:
+                on_refresh()
+
+        cerrar_dialogo(page, dlg_ref["dlg"], on_close=_despues)
+
+    dlg = ft.AlertDialog(
         title=ft.Text(f"Código: {prod['nombre']}"),
         content=ft.Column(
             [
@@ -694,17 +906,20 @@ def _dlg_codigo(app, prod, on_refresh=None):
                     "Sugerido: "
                     f"{inv.siguiente_codigo(app.local_id) or '—'}",
                     size=11, color=es.COLOR_TEXTO_SUAVE),
+                error_lbl,
             ],
             tight=True, width=300, spacing=6,
         ),
         actions=[
             ft.TextButton("Cancelar",
-                          on_click=lambda e: page.pop_dialog()),
+                          on_click=lambda e: cerrar_dialogo(page, dlg_ref["dlg"])),
             ft.FilledButton("Guardar", on_click=guardar,
                             style=es.estilo_boton_marca()),
         ],
         actions_alignment=ft.MainAxisAlignment.END,
-    ))
+    )
+    dlg_ref["dlg"] = dlg
+    page.show_dialog(dlg)
 
 
 def _dlg_renombrar(app, prod, on_refresh=None):
@@ -716,30 +931,39 @@ def _dlg_renombrar(app, prod, on_refresh=None):
         **es.estilo_textfield(12), height=54,
     )
     tf.on_focus = cursor_al_final
+    error_lbl = ft.Text("", color=es.COLOR_PELIGRO, size=12)
+    dlg_ref = {"dlg": None}
 
     def guardar(e):
+        error_lbl.value = ""
         try:
             inv.renombrar_producto(prod["id"], tf.value,
                                     usuario=app.usuario)
         except Exception as ex:
-            snack(page, str(ex), "error")
+            error_lbl.value = str(ex)
+            page.update()
             return
-        page.pop_dialog()
-        snack(page, "Producto renombrado (propagado)", "ok")
-        if on_refresh:
-            on_refresh()
 
-    page.show_dialog(ft.AlertDialog(
+        def _despues():
+            snack(page, "Producto renombrado (propagado)", "ok")
+            if on_refresh:
+                on_refresh()
+
+        cerrar_dialogo(page, dlg_ref["dlg"], on_close=_despues)
+
+    dlg = ft.AlertDialog(
         title=ft.Text(f"Renombrar: {prod['nombre']}"),
-        content=ft.Column([tf], tight=True, width=320),
+        content=ft.Column([tf, error_lbl], tight=True, width=320),
         actions=[
             ft.TextButton("Cancelar",
-                          on_click=lambda e: page.pop_dialog()),
+                          on_click=lambda e: cerrar_dialogo(page, dlg_ref["dlg"])),
             ft.FilledButton("Guardar", on_click=guardar,
                             style=es.estilo_boton_marca()),
         ],
         actions_alignment=ft.MainAxisAlignment.END,
-    ))
+    )
+    dlg_ref["dlg"] = dlg
+    page.show_dialog(dlg)
 
 
 def _dlg_umbrales(app, prod, on_refresh=None):
@@ -756,31 +980,41 @@ def _dlg_umbrales(app, prod, on_refresh=None):
         keyboard_type=ft.KeyboardType.NUMBER,
         **es.estilo_textfield(12), height=54,
     )
+    error_lbl = ft.Text("", color=es.COLOR_PELIGRO, size=12)
+    dlg_ref = {"dlg": None}
 
     def guardar(e):
+        error_lbl.value = ""
         try:
             inv.cambiar_umbrales(
                 prod["id"], int(tf_v.value), int(tf_a.value),
                 usuario=app.usuario)
         except Exception as ex:
-            snack(page, str(ex), "error")
+            error_lbl.value = str(ex)
+            page.update()
             return
-        page.pop_dialog()
-        snack(page, "Umbrales actualizados", "ok")
-        if on_refresh:
-            on_refresh()
 
-    page.show_dialog(ft.AlertDialog(
+        def _despues():
+            snack(page, "Umbrales actualizados", "ok")
+            if on_refresh:
+                on_refresh()
+
+        cerrar_dialogo(page, dlg_ref["dlg"], on_close=_despues)
+
+    dlg = ft.AlertDialog(
         title=ft.Text(f"Umbrales: {prod['nombre']}"),
-        content=ft.Column([tf_v, tf_a], tight=True, width=300, spacing=10),
+        content=ft.Column([tf_v, tf_a, error_lbl],
+                          tight=True, width=300, spacing=10),
         actions=[
             ft.TextButton("Cancelar",
-                          on_click=lambda e: page.pop_dialog()),
+                          on_click=lambda e: cerrar_dialogo(page, dlg_ref["dlg"])),
             ft.FilledButton("Guardar", on_click=guardar,
                             style=es.estilo_boton_marca()),
         ],
         actions_alignment=ft.MainAxisAlignment.END,
-    ))
+    )
+    dlg_ref["dlg"] = dlg
+    page.show_dialog(dlg)
 
 
 def _conf_baja(app, prod, on_refresh=None):
@@ -789,30 +1023,41 @@ def _conf_baja(app, prod, on_refresh=None):
         label="Motivo", value="Merma",
         **es.estilo_textfield(12), height=54,
     )
+    error_lbl = ft.Text("", color=es.COLOR_PELIGRO, size=12)
+    dlg_ref = {"dlg": None}
 
     def hacer(e):
+        error_lbl.value = ""
         m = (tf_m.value or "Merma").strip() or "Merma"
         try:
             inv.dar_baja(prod["id"], usuario=app.usuario, motivo=m)
         except Exception as ex:
-            snack(page, str(ex), "error")
+            error_lbl.value = str(ex)
+            page.update()
             return
-        page.pop_dialog()
-        snack(page, f"{prod['nombre']} dado de baja", "ok")
-        if on_refresh:
-            on_refresh()
 
-    page.show_dialog(ft.AlertDialog(
+        nombre = prod['nombre']
+
+        def _despues():
+            snack(page, f"{nombre} dado de baja", "ok")
+            if on_refresh:
+                on_refresh()
+
+        cerrar_dialogo(page, dlg_ref["dlg"], on_close=_despues)
+
+    dlg = ft.AlertDialog(
         title=ft.Text("Dar de baja"),
         content=ft.Column(
-            [ft.Text(f"¿Dar de baja «{prod['nombre']}»?"), tf_m],
+            [ft.Text(f"¿Dar de baja «{prod['nombre']}»?"), tf_m, error_lbl],
             tight=True, width=320, spacing=12),
         actions=[
             ft.TextButton("Cancelar",
-                        on_click=lambda e: page.pop_dialog()),
+                        on_click=lambda e: cerrar_dialogo(page, dlg_ref["dlg"])),
             ft.FilledButton("Dar de baja", on_click=hacer,
                             style=ft.ButtonStyle(
                                 bgcolor=es.COLOR_PELIGRO, color="white")),
         ],
         actions_alignment=ft.MainAxisAlignment.END,
-    ))
+    )
+    dlg_ref["dlg"] = dlg
+    page.show_dialog(dlg)

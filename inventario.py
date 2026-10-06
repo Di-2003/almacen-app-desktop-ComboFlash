@@ -77,7 +77,6 @@ _PATRON_CODIGO = re.compile(r"^F([A-Z])(\d{4})$")
 
 
 def normalizar_codigo(codigo: str | None) -> str | None:
-    """Limpia el código: strip, sin espacios, upper, límite de longitud."""
     if codigo is None:
         return None
     c = (codigo or "").strip().replace(" ", "").upper()
@@ -87,11 +86,6 @@ def normalizar_codigo(codigo: str | None) -> str | None:
 
 
 def siguiente_codigo(local_id: int) -> str:
-    """
-    Devuelve el siguiente código con formato Fxyyyy disponible en el
-    local. Si no hay códigos, empieza en FA0001. Cuando se acaba FA9999
-    pasa a FB0001, etc. Si se acaba la Z, devuelve None.
-    """
     with get_conn() as conn:
         filas = conn.execute(
             "SELECT codigo FROM productos WHERE local_id=? "
@@ -150,7 +144,7 @@ def _validar_codigo_unico(conn, local_id: int, codigo: str | None,
 # ================= MOTIVOS =================
 
 def motivo_default_salida() -> str:
-    return get_config("motivo_default_salida") or "Combos"
+    return get_config("motivo_default_salida") or "Venta"
 
 
 def motivos_usados_recientes(limite: int = 15) -> list[str]:
@@ -188,6 +182,29 @@ def get_umbrales_default() -> tuple[int, int]:
         int(get_config("umbral_verde_default") or 50),
         int(get_config("umbral_amarillo_default") or 20),
     )
+
+
+def get_tasa_usd() -> float:
+    try:
+        return float(get_config("tasa_usd") or 1.0)
+    except (TypeError, ValueError):
+        return 1.0
+
+
+def get_tasa_eur() -> float:
+    try:
+        return float(get_config("tasa_eur") or 1.0)
+    except (TypeError, ValueError):
+        return 1.0
+
+
+def get_tasa(codigo_moneda: str) -> float:
+    """Devuelve la tasa de cambio a CUP para la moneda dada."""
+    if codigo_moneda in ("USD", "Zelle"):
+        return get_tasa_usd()
+    if codigo_moneda == "EUR":
+        return get_tasa_eur()
+    return 1.0  # CUP
 
 
 def _ahora() -> str:
@@ -253,8 +270,21 @@ def listar_productos(local_id, solo_activos: bool = True) -> list[dict]:
         return [dict(r) for r in conn.execute(sql, (local_id,)).fetchall()]
 
 
+def listar_productos_inactivos(local_id) -> list[dict]:
+    """Devuelve SOLO los productos inactivos del local.
+    En General devuelve lista vacía."""
+    if local_id == GENERAL_ID:
+        return []
+    with get_conn() as conn:
+        filas = conn.execute(
+            "SELECT * FROM productos WHERE local_id=? AND activo=0 "
+            "ORDER BY nombre COLLATE NOCASE",
+            (local_id,),
+        ).fetchall()
+    return [dict(r) for r in filas]
+
+
 def _listar_general(solo_activos: bool) -> list[dict]:
-    """Vista agregada por nombre de producto (suma de todos los locales)."""
     locales_ids = [l["id"] for l in listar_locales(solo_activos=True)]
     if not locales_ids:
         return []
@@ -335,6 +365,37 @@ def buscar_producto(nombre_o_codigo: str, local_id) -> dict | None:
     return buscar_producto_por_nombre(nombre_o_codigo, local_id)
 
 
+# ================= BÚSQUEDA GLOBAL =================
+
+def buscar_producto_global_por_codigo(codigo: str) -> dict | None:
+    c = normalizar_codigo(codigo)
+    if not c:
+        return None
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT p.*, l.nombre AS local_nombre FROM productos p "
+            "JOIN locales l ON l.id=p.local_id "
+            "WHERE p.codigo=? COLLATE NOCASE "
+            "ORDER BY l.es_almacen DESC LIMIT 1",
+            (c,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def buscar_producto_global_por_nombre(nombre: str) -> dict | None:
+    if not (nombre or "").strip():
+        return None
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT p.*, l.nombre AS local_nombre FROM productos p "
+            "JOIN locales l ON l.id=p.local_id "
+            "WHERE p.nombre=? COLLATE NOCASE "
+            "ORDER BY l.es_almacen DESC LIMIT 1",
+            (nombre,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
 # ================= CONSULTAS DE MOVIMIENTOS =================
 
 def listar_movimientos(local_id=None, producto_id: int | None = None,
@@ -385,12 +446,6 @@ def registrar_entrada(nombre: str, cantidad, usuario, local_id: int,
                       precio_costo: float | None = None,
                       precio_unitario: float | None = None,
                       fecha: str | None = None) -> dict:
-    """
-    Entrada de un producto a un local concreto.
-    - Si no existe por nombre en ese local → se crea.
-    - Si ya existe → se suma stock, se actualiza código (si no tenía)
-      y precios (si vienen con valor > 0).
-    """
     username = _autorizar(usuario, _ROLES_OPERATIVOS)
 
     if local_id == GENERAL_ID:
@@ -412,8 +467,6 @@ def registrar_entrada(nombre: str, cantidad, usuario, local_id: int,
     grupo_id = uuid.uuid4().hex
 
     with get_conn() as conn:
-        _validar_codigo_unico(conn, local_id, codigo)
-
         prod = conn.execute(
             "SELECT * FROM productos WHERE local_id=? "
             "AND nombre=? COLLATE NOCASE",
@@ -421,6 +474,7 @@ def registrar_entrada(nombre: str, cantidad, usuario, local_id: int,
         ).fetchone()
 
         if prod is None:
+            _validar_codigo_unico(conn, local_id, codigo)
             color_antes = "rojo"
             uv, ua = get_umbrales_default()
             pc = float(precio_costo) if (precio_costo and
@@ -438,13 +492,23 @@ def registrar_entrada(nombre: str, cantidad, usuario, local_id: int,
         else:
             color_antes = color_de_producto(dict(prod))
             pid = prod["id"]
-            if codigo and not (prod["codigo"] or "").strip():
+
+            codigo_actual = (prod["codigo"] or "").strip()
+            if codigo and codigo != codigo_actual:
                 _validar_codigo_unico(conn, local_id, codigo,
                                        excluir_id=pid)
                 conn.execute(
                     "UPDATE productos SET codigo=? WHERE id=?",
                     (codigo, pid),
                 )
+            elif codigo and not codigo_actual:
+                _validar_codigo_unico(conn, local_id, codigo,
+                                       excluir_id=pid)
+                conn.execute(
+                    "UPDATE productos SET codigo=? WHERE id=?",
+                    (codigo, pid),
+                )
+
             if precio_costo is not None and float(precio_costo) > 0:
                 conn.execute(
                     "UPDATE productos SET precio_costo=?, "
@@ -456,6 +520,12 @@ def registrar_entrada(nombre: str, cantidad, usuario, local_id: int,
                     "UPDATE productos SET precio_unitario=?, "
                     "fecha_ultima_mod=? WHERE id=?",
                     (float(precio_unitario), fecha, pid),
+                )
+
+            # Si estaba inactivo, reactivar al recibir entrada
+            if not prod["activo"]:
+                conn.execute(
+                    "UPDATE productos SET activo=1 WHERE id=?", (pid,)
                 )
 
         conn.execute(
@@ -491,14 +561,6 @@ def registrar_salida(nombre_o_codigo: str, cantidad, usuario,
                      precio_unitario_momento: float | None = None,
                      detalle: str | None = None,
                      fecha: str | None = None) -> dict:
-    """
-    Salida de un producto de un local.
-    - `nombre_o_codigo`: acepta código o nombre.
-    - `rebaja`: descuento POR UNIDAD (>= 0).
-    - `precio_unitario_momento`: precio al momento. Si es None, se usa
-      el precio actual del producto.
-    - `detalle`: información extra (opcional).
-    """
     username = _autorizar(usuario, _ROLES_OPERATIVOS)
 
     if local_id == GENERAL_ID:
@@ -576,7 +638,6 @@ def registrar_salida(nombre_o_codigo: str, cantidad, usuario,
 def registrar_traspaso(nombre_o_codigo: str, cantidad, usuario,
                        local_origen_id: int, local_destino_id: int,
                        fecha: str | None = None) -> None:
-    """Traspasa `cantidad` de un producto entre locales."""
     username = _autorizar(usuario, _ROLES_OPERATIVOS)
 
     if local_origen_id == GENERAL_ID or local_destino_id == GENERAL_ID:
@@ -667,8 +728,8 @@ def _traspasar_producto_interno(nombre_o_codigo: str, cantidad: float,
             destino_id = destino["id"]
 
         conn.execute(
-            "UPDATE productos SET stock=stock+?, fecha_ultima_mod=? "
-            "WHERE id=?",
+            "UPDATE productos SET stock=stock+?, fecha_ultima_mod=?, "
+            "activo=1 WHERE id=?",
             (cantidad, fecha, destino_id),
         )
         conn.execute(
@@ -719,8 +780,6 @@ def cambiar_umbrales(producto_id: int, umbral_verde: int,
 
 
 def set_precio_costo(producto_id: int, precio: float, usuario) -> None:
-    """Cambia el precio de costo y lo propaga a TODOS los locales
-    donde exista el producto (por nombre)."""
     username = _autorizar(usuario, _ROLES_OPERATIVOS)
 
     try:
@@ -753,7 +812,6 @@ def set_precio_costo(producto_id: int, precio: float, usuario) -> None:
 
 
 def set_precio_unitario(producto_id: int, precio: float, usuario) -> None:
-    """Cambia el precio unitario y lo propaga a TODOS los locales."""
     username = _autorizar(usuario, _ROLES_OPERATIVOS)
 
     try:
@@ -786,9 +844,6 @@ def set_precio_unitario(producto_id: int, precio: float, usuario) -> None:
 
 
 def set_codigo(producto_id: int, nuevo_codigo: str, usuario) -> None:
-    """Cambia el código y lo propaga a TODOS los locales.
-    Valida que el nuevo código no esté en uso por OTRO producto
-    (con distinto nombre) en NINGÚN local."""
     username = _autorizar(usuario, _ROLES_OPERATIVOS)
 
     with get_conn() as conn:
@@ -831,9 +886,6 @@ def set_codigo(producto_id: int, nuevo_codigo: str, usuario) -> None:
 
 def renombrar_producto(producto_id: int, nombre_nuevo: str,
                        usuario) -> None:
-    """Renombra el producto y propaga a TODOS los locales.
-    Valida que el nuevo nombre no choque con otro producto distinto
-    en ningún local."""
     username = _autorizar(usuario, _ROLES_OPERATIVOS)
 
     nombre_nuevo = (nombre_nuevo or "").strip()
@@ -852,7 +904,6 @@ def renombrar_producto(producto_id: int, nombre_nuevo: str,
         if nombre_actual.lower() == nombre_nuevo.lower():
             raise ValueError("El nombre nuevo es igual al actual")
 
-        # ¿Ya existe otro producto con ese nombre en algún local?
         otro = conn.execute(
             "SELECT p.nombre, l.nombre AS local_nombre "
             "FROM productos p JOIN locales l ON l.id=p.local_id "
@@ -879,10 +930,9 @@ def renombrar_producto(producto_id: int, nombre_nuevo: str,
         )
 
 
-# ================= BAJA =================
+# ================= BAJA / REACTIVAR =================
 
 def dar_baja(producto_id: int, usuario, motivo: str | None = None) -> None:
-    """Da de baja un producto del local actual (solo ese local)."""
     username = _autorizar(usuario, _ROLES_OPERATIVOS)
 
     motivo = (motivo or "").strip() or "Merma"
@@ -909,6 +959,31 @@ def dar_baja(producto_id: int, usuario, motivo: str | None = None) -> None:
             "VALUES(?,?,'BAJA',?,?,?,?,?)",
             (prod["local_id"], producto_id, stock_actual, motivo,
              fecha, username, pu),
+        )
+
+
+def reactivar_producto(producto_id: int, usuario) -> None:
+    """Reactiva un producto dado de baja en el local actual."""
+    username = _autorizar(usuario, _ROLES_OPERATIVOS)
+    fecha = _ahora()
+    with get_conn() as conn:
+        prod = conn.execute(
+            "SELECT * FROM productos WHERE id=?", (producto_id,)
+        ).fetchone()
+        if prod is None:
+            raise ValueError("Producto no encontrado")
+        if prod["activo"]:
+            raise ValueError("El producto ya está activo")
+
+        conn.execute(
+            "UPDATE productos SET activo=1, fecha_ultima_mod=? WHERE id=?",
+            (fecha, producto_id),
+        )
+        conn.execute(
+            "INSERT INTO movimientos(local_id,producto_id,tipo,cantidad,"
+            "detalle,fecha,usuario) VALUES(?,?,'RESTAURACION',0,?,?,?)",
+            (prod["local_id"], producto_id,
+             "producto reactivado", fecha, username),
         )
 
 
@@ -941,106 +1016,144 @@ def totales_local(local_id) -> dict:
     }
 
 
-# ================= EDICIÓN DE MOVIMIENTOS (admin y almacén) =================
-
-def editar_movimiento(mov_id: int, producto_id: int, tipo: str,
-                      cantidad: float, motivo: str | None,
-                      fecha: str, usuario) -> None:
-    """
-    Edita un movimiento completo. Revierte el efecto del original,
-    aplica el nuevo, guarda cambios.
-    """
-    username = _autorizar(usuario, _ROLES_OPERATIVOS)
-
-    TIPOS_VALIDOS = ("ENTRADA", "SALIDA", "BAJA", "RESTAURACION",
-                     "TRASPASO_SALIDA", "TRASPASO_ENTRADA",
-                     "UMBRAL", "AJUSTE")
-    if tipo not in TIPOS_VALIDOS:
-        raise ValueError(f"Tipo inválido: {tipo}")
-
-    cantidad = float(cantidad)
+def totales_por_concepto(local_id) -> dict:
+    filtro = ""
+    params: list = []
+    if local_id != GENERAL_ID:
+        filtro = " AND local_id=?"
+        params.append(local_id)
 
     with get_conn() as conn:
-        orig = conn.execute(
-            "SELECT * FROM movimientos WHERE id=?", (mov_id,)
+        ventas = conn.execute(
+            "SELECT COUNT(*) AS n, "
+            "COALESCE(SUM(cantidad),0) AS cant, "
+            "COALESCE(SUM((precio_unitario_momento - rebaja) * cantidad),0) AS monto "
+            "FROM movimientos "
+            "WHERE tipo='SALIDA' AND LOWER(TRIM(COALESCE(motivo,'')))='venta'"
+            + filtro,
+            tuple(params),
         ).fetchone()
-        if orig is None:
-            raise ValueError("Movimiento no encontrado")
 
-        _aplicar_efecto_stock(
-            conn, orig["producto_id"], orig["tipo"],
-            -float(orig["cantidad"]),
-        )
-
-        prod_dest = conn.execute(
-            "SELECT local_id FROM productos WHERE id=?", (producto_id,)
+        entradas = conn.execute(
+            "SELECT COUNT(*) AS n, "
+            "COALESCE(SUM(cantidad),0) AS cant "
+            "FROM movimientos WHERE tipo='ENTRADA'" + filtro,
+            tuple(params),
         ).fetchone()
-        if prod_dest is None:
-            raise ValueError(f"Producto {producto_id} no encontrado")
-        local_id_nuevo = prod_dest["local_id"]
 
-        _aplicar_efecto_stock(
-            conn, producto_id, tipo, cantidad,
-        )
+        otras_salidas = conn.execute(
+            "SELECT COUNT(*) AS n, "
+            "COALESCE(SUM(cantidad),0) AS cant "
+            "FROM movimientos "
+            "WHERE tipo='SALIDA' "
+            "AND LOWER(TRIM(COALESCE(motivo,'')))<>'venta'" + filtro,
+            tuple(params),
+        ).fetchone()
 
-        motivo_limpio = (motivo or "").strip() or None
-        conn.execute(
-            "UPDATE movimientos SET local_id=?, producto_id=?, tipo=?, "
-            "cantidad=?, motivo=?, fecha=? WHERE id=?",
-            (local_id_nuevo, producto_id, tipo, cantidad,
-             motivo_limpio, fecha, mov_id),
-        )
+        bajas = conn.execute(
+            "SELECT COUNT(*) AS n, "
+            "COALESCE(SUM(cantidad),0) AS cant "
+            "FROM movimientos WHERE tipo='BAJA'" + filtro,
+            tuple(params),
+        ).fetchone()
 
-        # Actualizar fecha_ultima_mod de los productos afectados
-        ids_afectados = {int(orig["producto_id"]), int(producto_id)}
-        for pid in ids_afectados:
-            row = conn.execute(
-                "SELECT MAX(fecha) AS ultima FROM movimientos "
-                "WHERE producto_id=?",
-                (pid,),
-            ).fetchone()
-            if row and row["ultima"]:
-                conn.execute(
-                    "UPDATE productos SET fecha_ultima_mod=? WHERE id=?",
-                    (row["ultima"], pid),
-                )
+    return {
+        "ventas": {
+            "n": int(ventas["n"] or 0),
+            "cantidad": float(ventas["cant"] or 0),
+            "monto": float(ventas["monto"] or 0),
+        },
+        "entradas": {
+            "n": int(entradas["n"] or 0),
+            "cantidad": float(entradas["cant"] or 0),
+        },
+        "otras_salidas": {
+            "n": int(otras_salidas["n"] or 0),
+            "cantidad": float(otras_salidas["cant"] or 0),
+        },
+        "bajas": {
+            "n": int(bajas["n"] or 0),
+            "cantidad": float(bajas["cant"] or 0),
+        },
+    }
 
 
-def _aplicar_efecto_stock(conn, producto_id: int, tipo: str,
-                          cantidad: float) -> None:
-    """Aplica al stock el efecto de un movimiento."""
+# ================= ELIMINAR MOVIMIENTO =================
+
+def _revertir_efecto_stock(conn, producto_id: int, tipo: str,
+                           cantidad: float) -> None:
     if tipo == "ENTRADA":
-        signo = 1
+        cambio = -float(cantidad)
     elif tipo == "SALIDA":
-        signo = -1
+        cambio = float(cantidad)
     elif tipo == "TRASPASO_SALIDA":
-        signo = -1
+        cambio = float(cantidad)
     elif tipo == "TRASPASO_ENTRADA":
-        signo = 1
+        cambio = -float(cantidad)
     elif tipo == "BAJA":
-        # BAJA lleva el stock actual a 0 (efecto especial). Al revertir,
-        # el signo sería + para restaurar. Pero como edit_movimiento ya
-        # maneja el caso "restaurar el stock que la BAJA puso a 0", esto
-        # es heurístico. Para v1, tratamos BAJA como SALIDA de la
-        # cantidad que tenía el producto en ese momento.
-        signo = -1
+        raise ValueError(
+            "No se puede eliminar una BAJA directamente. "
+            "Reactiva el producto manualmente si es necesario."
+        )
     else:
-        return
+        raise ValueError(f"Tipo no soportado para eliminación: {tipo}")
 
-    cambio = signo * float(cantidad)
     prod = conn.execute(
         "SELECT stock FROM productos WHERE id=?", (producto_id,)
     ).fetchone()
     if prod is None:
-        raise ValueError(f"Producto {producto_id} no encontrado")
+        raise ValueError("Producto no encontrado para revertir stock")
 
     nuevo = float(prod["stock"]) + cambio
     if nuevo < 0:
         raise ValueError(
-            f"El stock quedaría negativo ({nuevo:.2f}). "
-            f"Revisa la cantidad o el tipo."
+            f"El stock quedaría negativo ({nuevo:.2f}) al revertir "
+            f"el movimiento. Revisa las operaciones previas."
         )
     conn.execute(
         "UPDATE productos SET stock=? WHERE id=?",
         (nuevo, producto_id),
     )
+
+
+def eliminar_movimiento(mov_id: int, usuario) -> None:
+    _autorizar(usuario, _ROLES_OPERATIVOS)
+
+    with get_conn() as conn:
+        mov = conn.execute(
+            "SELECT * FROM movimientos WHERE id=?", (mov_id,)
+        ).fetchone()
+        if mov is None:
+            raise ValueError("Movimiento no encontrado")
+
+        _revertir_efecto_stock(
+            conn, mov["producto_id"], mov["tipo"], float(mov["cantidad"])
+        )
+
+        if (mov["tipo"] in ("TRASPASO_SALIDA", "TRASPASO_ENTRADA")
+                and mov["grupo_id"]):
+            par = conn.execute(
+                "SELECT * FROM movimientos WHERE grupo_id=? AND id<>?",
+                (mov["grupo_id"], mov_id),
+            ).fetchone()
+            if par:
+                _revertir_efecto_stock(
+                    conn, par["producto_id"], par["tipo"],
+                    float(par["cantidad"])
+                )
+                conn.execute(
+                    "DELETE FROM movimientos WHERE id=?", (par["id"],)
+                )
+
+        conn.execute("DELETE FROM movimientos WHERE id=?", (mov_id,))
+
+        row = conn.execute(
+            "SELECT MAX(fecha) AS ultima FROM movimientos "
+            "WHERE producto_id=?",
+            (mov["producto_id"],),
+        ).fetchone()
+        if row and row["ultima"]:
+            conn.execute(
+                "UPDATE productos SET fecha_ultima_mod=? WHERE id=?",
+                (row["ultima"], mov["producto_id"]),
+            )

@@ -1,19 +1,10 @@
 # ============================================================
 # Paleta Almacén Raidel (móvil) — Negro + Dorado
 # ============================================================
-#
-# Todos los colores se acceden como `es.COLOR_X`. Para cambiar de
-# tema en runtime, se llama a `es.aplicar_tema("oscuro"|"claro")`.
-# ============================================================
 
 import warnings
 import flet as ft
 
-# Flet 1.0.3 emite DeprecationWarning al usar propiedades viejas
-# (border_radius, border_color, InputBorder.*). Estos helpers las
-# usan como fallback cuando la API nueva no está disponible. Como
-# no podemos migrar a la API nueva sin romper compatibilidad,
-# silenciamos los avisos a nivel de módulo.
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 
@@ -127,7 +118,6 @@ def es_oscuro() -> bool:
 
 
 def aplicar_tema(modo: str) -> None:
-    """Cambia la paleta global y reasigna los colores del módulo."""
     global _MODO_ACTUAL
     if modo not in ("claro", "oscuro"):
         modo = "oscuro"
@@ -143,23 +133,12 @@ aplicar_tema("oscuro")
 # ============================================================
 # Helpers de compatibilidad para TextField
 # ============================================================
-#
-# Estrategia: intentar la API nueva (OutlineInputBorder) y, si
-# falla, caer a la API vieja. Los DeprecationWarning ya están
-# silenciados arriba, así que aunque usemos la API vieja no
-# aparece ruido en consola.
-# ============================================================
 
 _FALLBACK_BORDE  = "#3a3a3a"
 _FALLBACK_ACENTO = "#d4af37"
 
 
 def borde_textfield(radio: int = 12, color=None, color_foco=None) -> dict:
-    """kwargs de borde para TextField y Dropdown. Solo borde.
-
-    No incluye cursor_color ni selection_color porque Dropdown los
-    rechaza en Flet 1.0.3.
-    """
     color = color or globals().get("COLOR_BORDE_FUERTE") or _FALLBACK_BORDE
     color_foco = (color_foco
                   or globals().get("COLOR_ACENTO")
@@ -210,11 +189,8 @@ def borde_textfield(radio: int = 12, color=None, color_foco=None) -> dict:
         "focused_border_width": 2,
     }
 
-def estilo_textfield(radio: int = 12, color=None, color_foco=None) -> dict:
-    """kwargs completos para TextField: borde + cursor + selection.
 
-    Úsalo solo con ft.TextField (no con Dropdown).
-    """
+def estilo_textfield(radio: int = 12, color=None, color_foco=None) -> dict:
     base = dict(borde_textfield(radio, color, color_foco))
     foco = (color_foco
             or globals().get("COLOR_ACENTO")
@@ -226,7 +202,6 @@ def estilo_textfield(radio: int = 12, color=None, color_foco=None) -> dict:
 
 
 def borde_textfield_none():
-    """Valor para TextField sin borde."""
     none_cls = getattr(ft, "NoInputBorder", None)
     if none_cls is not None:
         try:
@@ -242,20 +217,14 @@ def borde_textfield_none():
         except Exception:
             pass
 
-    # Fallback API vieja
     try:
         return ft.InputBorder.NONE
     except Exception:
         return None
 
 
-# ============================================================
-# Helper de estilo para botones con la marca
-# ============================================================
-
 def estilo_boton_marca(bgcolor=None, color_texto=None,
                     radio: int = 10) -> ft.ButtonStyle:
-    """ButtonStyle dorado de marca (o el color indicado)."""
     bgcolor = bgcolor or globals().get("COLOR_ACENTO") or _FALLBACK_ACENTO
     if color_texto is None:
         color_texto = COLOR_MARCA_NEGRO
@@ -265,4 +234,29 @@ def estilo_boton_marca(bgcolor=None, color_texto=None,
         shape=ft.RoundedRectangleBorder(
             radius=ft.BorderRadius.all(radio)),
     )
-    
+
+
+# ============================================================
+# Monedas (símbolos y etiquetas)
+# ============================================================
+
+MONEDAS_INFO = {
+    "CUP":   {"simbolo": "$",    "etiqueta": "CUP"},
+    "USD":   {"simbolo": "USD$", "etiqueta": "USD"},
+    "EUR":   {"simbolo": "€",    "etiqueta": "EUR"},
+}
+
+
+def simbolo_moneda(codigo: str) -> str:
+    info = MONEDAS_INFO.get(codigo, MONEDAS_INFO["CUP"])
+    return info["simbolo"]
+
+
+def etiqueta_moneda(codigo: str) -> str:
+    info = MONEDAS_INFO.get(codigo, MONEDAS_INFO["CUP"])
+    return info["etiqueta"]
+
+
+def texto_moneda(codigo: str) -> str:
+    info = MONEDAS_INFO.get(codigo, MONEDAS_INFO["CUP"])
+    return info["simbolo"]

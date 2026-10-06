@@ -6,6 +6,7 @@ from ui import estilos as es
 from ui.componentes import (
     fila_producto, snack, campo_busqueda, empty_state,
     bottom_sheet, ruta_asset, imagen_opcional, mounted,
+    cerrar_dialogo,
 )
 from ui import modales
 
@@ -112,7 +113,6 @@ def _tarjeta_resumen(total, n_productos, n_rojo=0):
 
 
 def _chip_local(app):
-    """Chip con el local actual, tocable para abrir el selector."""
     nombre = loc.nombre_local(app.local_id)
 
     def abrir_selector(e):
@@ -145,10 +145,14 @@ def _abrir_selector_local(app):
     items = loc.listar_para_menu()
     actual = app.local_id
 
+    bs_ref = {"bs": None}
+
     def elegir(lid):
         def _hacer(e):
-            page.pop_dialog()
-            app.cambiar_local(lid)
+            # Cerrar el bottom sheet y REFRESCAR DIFERIDO
+            def _despues():
+                app.cambiar_local(lid)
+            cerrar_dialogo(page, bs_ref["bs"], on_close=_despues)
         return _hacer
 
     tiles = []
@@ -174,7 +178,7 @@ def _abrir_selector_local(app):
             ),
             padding=14,
             bgcolor=(es.COLOR_ACENTO_SUAVE if es_actual
-                    else es.COLOR_SUPERFICIE_2),
+                     else es.COLOR_SUPERFICIE_2),
             border_radius=10,
             on_click=elegir(lid),
             ink=True,
@@ -190,7 +194,11 @@ def _abrir_selector_local(app):
         ],
         spacing=6, tight=True,
     )
-    page.show_dialog(bottom_sheet(contenido))
+
+    bs = bottom_sheet(contenido, page=page)
+    bs_ref["bs"] = bs
+    page.show_dialog(bs)
+
 
 def vista_principal(app):
     page = app.page
@@ -206,10 +214,13 @@ def vista_principal(app):
     def refrescar():
         try:
             lista_cont.controls.clear()
-            productos = inv.listar_productos(
-                app.local_id,
-                solo_activos=not app.ver_inactivos,
-            )
+
+            if app.ver_inactivos:
+                productos = inv.listar_productos_inactivos(app.local_id)
+            else:
+                productos = inv.listar_productos(
+                    app.local_id, solo_activos=True)
+
             f = app.filtro
             if f:
                 productos = [
@@ -226,26 +237,26 @@ def vista_principal(app):
                             app, prod, on_refresh=refrescar)))
 
             if not productos:
-                lista_cont.controls.append(empty_state(
-                    ft.Icons.INBOX_OUTLINED,
-                    "Sin productos",
-                    ("No hay coincidencias para tu búsqueda."
-                    if f else
-                    ("No hay inactivos en este local."
-                    if app.ver_inactivos else
-                    "Empieza agregando tu primer producto.")),
-                ))
+                if app.ver_inactivos:
+                    lista_cont.controls.append(empty_state(
+                        ft.Icons.INBOX_OUTLINED,
+                        "Sin productos inactivos",
+                        "No hay productos dados de baja en este local."))
+                else:
+                    lista_cont.controls.append(empty_state(
+                        ft.Icons.INBOX_OUTLINED,
+                        "Sin productos activos",
+                        "No hay coincidencias para tu búsqueda."
+                        if f else
+                        "Empieza agregando tu primer producto."))
 
             t = inv.totales_local(app.local_id)
             n_rojo = len([p for p in productos
-                        if inv.color_de_producto(p) == "rojo"])
+                          if inv.color_de_producto(p) == "rojo"])
             contenedor_resumen.content = _tarjeta_resumen(
                 t["invertido"], len(productos), n_rojo
             )
 
-            # Solo actualizar si los controles ya están montados.
-            # En el primer render, vista_principal se llama antes de que
-            # el View esté en la página, así que update() fallaría.
             if mounted(lista_cont):
                 lista_cont.update()
             if mounted(contenedor_resumen):
@@ -308,19 +319,23 @@ def vista_principal(app):
         botones = ft.Container(height=0)
 
     activo_toggle = app.ver_inactivos
+    texto_toggle = "Inactivos" if activo_toggle else "Activos"
+    icono_toggle = (ft.Icons.VISIBILITY_OFF if activo_toggle
+                    else ft.Icons.VISIBILITY)
+
     toggle_row = ft.Row(
         [
             ft.Container(
                 content=ft.Row(
                     [
                         ft.Icon(
-                            ft.Icons.FILTER_ALT,
+                            icono_toggle,
                             size=14,
                             color=(es.COLOR_MARCA_NEGRO if activo_toggle
                                    else es.COLOR_TEXTO_SUAVE),
                         ),
                         ft.Text(
-                            "Todos" if activo_toggle else "Inactivos",
+                            texto_toggle,
                             size=11,
                             color=(es.COLOR_MARCA_NEGRO if activo_toggle
                                    else es.COLOR_TEXTO_SUAVE),
@@ -363,7 +378,6 @@ def vista_principal(app):
         bgcolor=es.COLOR_FONDO,
     )
 
-    # Render inicial (no hace update() porque aún no está montado)
     refrescar()
 
     logo_fallback = ft.Icon(ft.Icons.INVENTORY_2,
@@ -398,4 +412,3 @@ def vista_principal(app):
         navigation_bar=barra_navegacion(app, 0),
         bgcolor=es.COLOR_FONDO,
     )
-

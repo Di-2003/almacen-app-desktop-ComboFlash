@@ -10,7 +10,6 @@ warnings.filterwarnings("ignore", category=UserWarning, module=r"flet\..*")
 
 import flet as ft
 from db import inicializar_db, get_pref
-from backup import hacer_backup
 from ui import estilos as es
 from ui.app import AlmacenApp
 
@@ -34,10 +33,10 @@ def main(page: ft.Page):
     # ───────────────────────────────────────────────────────────
 
     inicializar_db()
-    try:
-        hacer_backup()
-    except Exception:
-        pass
+    # NOTA: el backup automático al arranque se removió por pedido
+    # del usuario. Ahora el backup se hace manualmente desde
+    # Perfil → "Exportar copia de seguridad" o "Copia rápida a
+    # carpeta". Así el usuario decide dónde guardarlo.
 
     try:
         modo = get_pref("tema") or "oscuro"

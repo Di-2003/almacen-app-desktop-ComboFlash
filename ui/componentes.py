@@ -9,7 +9,6 @@ from pathlib import Path
 # ============================================================
 
 def ruta_asset(nombre: str) -> str:
-    """Ruta correcta para un asset, compatible con APK y escritorio."""
     base = os.environ.get("FLET_ASSETS_DIR")
     if base:
         return str(Path(base) / nombre)
@@ -19,7 +18,6 @@ def ruta_asset(nombre: str) -> str:
 def imagen_opcional(nombre: str, fallback: ft.Control,
                     width=None, height=None,
                     fit=ft.BoxFit.CONTAIN) -> ft.Control:
-    """Devuelve un ft.Image si existe recursos/<nombre>, o el fallback."""
     ruta = ruta_asset(nombre)
     try:
         if Path(ruta).exists():
@@ -31,38 +29,25 @@ def imagen_opcional(nombre: str, fallback: ft.Control,
 
 
 # ============================================================
-# Chips y badges
+# Chips y badges (solo puntos de color, sin texto)
 # ============================================================
 
-_ETIQUETA_ESTADO = {
-    "verde":    "OK",
-    "amarillo": "BAJO",
-    "rojo":     "CRÍTICO",
-}
-
-
 def chip_estado(color: str) -> ft.Container:
+    """Círculo de color según estado. Sin texto."""
     return ft.Container(
-        content=ft.Row(
-            [
-                ft.Container(
-                    width=7, height=7,
-                    bgcolor=es.COLOR_ESTADO_TEXTO[color],
-                    border_radius=4,
-                ),
-                ft.Text(
-                    _ETIQUETA_ESTADO[color],
-                    size=10,
-                    weight=ft.FontWeight.BOLD,
-                    color=es.COLOR_ESTADO_TEXTO[color],
-                ),
-            ],
-            spacing=6, tight=True,
-        ),
-        bgcolor=es.COLOR_ESTADO_FONDO[color],
-        padding=ft.Padding.symmetric(horizontal=10, vertical=5),
-        border_radius=20,
+        width=14, height=14,
+        bgcolor=es.COLOR_ESTADO_TEXTO[color],
+        border_radius=7,
         border=ft.Border.all(1, es.COLOR_ESTADO_BORDE[color]),
+    )
+
+
+def chip_inactivo() -> ft.Container:
+    """Círculo gris para productos inactivos."""
+    return ft.Container(
+        width=14, height=14,
+        bgcolor=es.COLOR_TEXTO_TENUE,
+        border_radius=7,
     )
 
 
@@ -121,15 +106,14 @@ def tarjeta_metrica(titulo, valor, subtitulo="",
 
 
 def fila_producto(prod, on_tap=None) -> ft.Container:
-    """Fila de producto: borde izquierdo de color + nombre + datos."""
     import inventario as inv
     color = inv.color_de_producto(prod)
     pc = float(prod.get("precio_costo", 0) or 0)
     pv = float(prod.get("precio_unitario", 0) or 0)
     stock_txt = inv.fmt_cantidad(prod["stock"])
     codigo = (prod.get("codigo") or "").strip()
+    esta_activo = prod.get("activo", 1) == 1
 
-    # Fila de cabecera: nombre (2 líneas) + código
     cabecera = ft.Row(
         [
             ft.Text(
@@ -148,7 +132,6 @@ def fila_producto(prod, on_tap=None) -> ft.Container:
         vertical_alignment=ft.CrossAxisAlignment.START,
     )
 
-    # Bloque de dato: label arriba, valor abajo
     def _dato(label, valor):
         return ft.Column(
             [
@@ -173,9 +156,20 @@ def fila_producto(prod, on_tap=None) -> ft.Container:
         spacing=0,
     )
 
+    chip_estado_ctrl = (chip_estado(color) if esta_activo
+                        else chip_inactivo())
+
     return ft.Container(
         content=ft.Column(
-            [cabecera, ft.Container(height=8), fila_datos],
+            [
+                ft.Row([
+                    ft.Container(cabecera, expand=True),
+                    chip_estado_ctrl,
+                ], spacing=8,
+                    vertical_alignment=ft.CrossAxisAlignment.START),
+                ft.Container(height=8),
+                fila_datos,
+            ],
             spacing=0,
         ),
         padding=ft.Padding.only(left=16, top=14, right=14, bottom=14),
@@ -189,6 +183,7 @@ def fila_producto(prod, on_tap=None) -> ft.Container:
         ),
         on_click=on_tap,
         ink=True,
+        opacity=0.6 if not esta_activo else 1.0,
     )
 
 
@@ -276,27 +271,17 @@ def empty_state(icono, titulo, subtitulo="") -> ft.Container:
         alignment=ft.Alignment.CENTER,
     )
 
+
 # ============================================================
-# Bottom sheet con scroll y altura limitada
-# ============================================================
-#
-# El BottomSheet de Flet no se auto-limita. Si el contenido es muy
-# alto, se corta por abajo. Esta versión:
-#   - Limita la altura al 85% de la pantalla (o menos si el
-#     contenido es menor).
-#   - Añade scroll interno si el contenido excede.
+# Bottom sheet
 # ============================================================
 
 def bottom_sheet(content: ft.Control,
                 page: ft.Page | None = None,
                 alto_max_pct: float = 0.85) -> ft.BottomSheet:
-    # Intentar obtener altura de pantalla
     alto = None
     if page is not None:
         try:
-            h = None
-            # page.height puede no existir en algunos casos; intentar
-            # page.window.height
             h = getattr(page, "height", None)
             if not h:
                 w = getattr(page, "window", None)
@@ -309,7 +294,6 @@ def bottom_sheet(content: ft.Control,
 
     col = ft.Column(
         [
-            # handle
             ft.Row(
                 [ft.Container(width=40, height=4,
                               bgcolor=es.COLOR_BORDE_FUERTE,
@@ -336,22 +320,106 @@ def bottom_sheet(content: ft.Control,
     return ft.BottomSheet(content=cont)
 
 
+# ============================================================
+# Snack flotante
+# ============================================================
+
 def snack(page, texto, tipo="info"):
     colores = {
-        "info":  es.COLOR_TEXTO,
-        "ok":    es.COLOR_EXITO,
-        "error": es.COLOR_PELIGRO,
-        "warn":  es.COLOR_AMBAR,
+        "info":  "#374151",
+        "ok":    "#16a34a",
+        "error": "#dc2626",
+        "warn":  "#ca8a04",
     }
-    page.show_dialog(ft.SnackBar(
-        content=ft.Text(texto, color="white"),
-        bgcolor=colores.get(tipo, es.COLOR_TEXTO),
-        duration=2800,
-    ))
+
+    snack_bar = ft.SnackBar(
+        content=ft.Text(texto, color="white", size=13),
+        bgcolor=colores.get(tipo, "#374151"),
+        duration=15000,
+        behavior=ft.SnackBarBehavior.FLOATING,
+        show_close_icon=True,
+        close_icon_color="white",
+    )
+
+    try:
+        page.open(snack_bar)
+    except Exception:
+        try:
+            page.show_dialog(snack_bar)
+        except Exception:
+            pass
+
+
+# ============================================================
+# Cerrar diálogo + refrescar (SIN colgar)
+# ============================================================
+#
+# Problema: cuando llamas a app.refrescar() inmediatamente después
+# de cerrar un diálogo, Flet no alcanza a procesar el cierre y la
+# ventana se queda colgada.
+#
+# Solución: cerrar el diálogo primero, hacer page.update(), y
+# luego ejecutar el callback en un task diferido.
+# ============================================================
+
+def cerrar_dialogo(page, control=None, on_close=None):
+    """
+    Cierra un diálogo/bottom sheet.
+
+    - `control`: el diálogo a cerrar (opcional, se refuerza el cierre).
+    - `on_close`: callback opcional que se ejecuta DESPUÉS del cierre,
+      en un task diferido. Ideal para `app.refrescar`.
+    """
+    # 1. Marcar como cerrado
+    if control is not None:
+        try:
+            control.open = False
+        except Exception:
+            pass
+
+    # 2. Intentar page.pop_dialog
+    try:
+        page.pop_dialog()
+    except Exception:
+        pass
+
+    # 3. Intentar page.close (por si existe)
+    if control is not None:
+        try:
+            page.close(control)
+        except Exception:
+            pass
+
+    # 4. Forzar update
+    try:
+        page.update()
+    except Exception:
+        pass
+
+    # 5. Ejecutar callback en task diferido (evita el cuelgue)
+    if on_close is not None:
+        async def _deferred():
+            import asyncio
+            try:
+                await asyncio.sleep(0.08)
+            except Exception:
+                pass
+            try:
+                on_close()
+            except Exception:
+                pass
+
+        try:
+            page.run_task(_deferred)
+        except Exception:
+            # Fallback si run_task no está disponible
+            try:
+                on_close()
+            except Exception:
+                pass
 
 
 def cursor_al_final(e):
-    """Coloca el cursor al final del TextField que dispara el evento."""
     tf = e.control
     try:
         texto = tf.value or ""
@@ -362,12 +430,11 @@ def cursor_al_final(e):
         tf.update()
     except Exception:
         pass
-    
+
+
 def mounted(ctrl) -> bool:
-    """True si el control ya está montado en la página."""
     try:
         _ = ctrl.page
         return True
     except Exception:
         return False
-

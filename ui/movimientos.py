@@ -1,5 +1,6 @@
 """
 Historial de movimientos con filtros y edición.
+Incluye opción de eliminar (solo admin) que revierte el stock.
 """
 import flet as ft
 import inventario as inv
@@ -210,6 +211,10 @@ def _detalle_movimiento(app, mv, on_refresh):
         page.pop_dialog()
         _dlg_edit_mov(app, mv, on_refresh)
 
+    def eliminar(e):
+        page.pop_dialog()
+        _confirmar_eliminar_mov(app, mv, on_refresh)
+
     contenido = ft.Column([
         ft.Row([
             ft.Container(
@@ -251,7 +256,59 @@ def _detalle_movimiento(app, mv, on_refresh):
         ),
     ], spacing=8, tight=True)
 
+    # Botón de eliminar solo para admin
+    if app.usuario["rol"] == "admin":
+        contenido.controls.append(
+            ft.Container(
+                content=ft.Row([
+                    ft.Icon(ft.Icons.DELETE, color="white", size=18),
+                    ft.Text("Eliminar movimiento", size=14,
+                            color="white",
+                            weight=ft.FontWeight.W_600),
+                ], spacing=10,
+                    alignment=ft.MainAxisAlignment.CENTER),
+                padding=ft.Padding.symmetric(vertical=14),
+                bgcolor=es.COLOR_PELIGRO,
+                border_radius=12,
+                on_click=eliminar, ink=True,
+                alignment=ft.Alignment.CENTER,
+            )
+        )
+
     page.show_dialog(bottom_sheet(contenido, page=page))
+
+
+def _confirmar_eliminar_mov(app, mv, on_refresh):
+    page = app.page
+
+    def hacer(e):
+        try:
+            inv.eliminar_movimiento(mv["id"], app.usuario)
+        except Exception as ex:
+            snack(page, str(ex), "error")
+            return
+        page.pop_dialog()
+        snack(page, "Movimiento eliminado y stock restaurado", "ok")
+        on_refresh()
+
+    page.show_dialog(ft.AlertDialog(
+        title=ft.Text("Eliminar movimiento"),
+        content=ft.Text(
+            f"¿Eliminar el movimiento #{mv['id']} de "
+            f"«{mv['producto']}»?\n\n"
+            f"Se revertirá su efecto sobre el stock. "
+            f"Esta acción no se puede deshacer.",
+            size=13, color=es.COLOR_TEXTO),
+        actions=[
+            ft.TextButton("Cancelar",
+                          on_click=lambda e: page.pop_dialog()),
+            ft.FilledButton(
+                "Eliminar", on_click=hacer,
+                style=ft.ButtonStyle(
+                    bgcolor=es.COLOR_PELIGRO, color="white")),
+        ],
+        actions_alignment=ft.MainAxisAlignment.END,
+    ))
 
 
 def _linea(label, valor):
@@ -297,8 +354,10 @@ def _dlg_edit_mov(app, mv, on_refresh):
         value=mv["fecha"],
         **es.estilo_textfield(12), height=54,
     )
+    error_lbl = ft.Text("", color=es.COLOR_PELIGRO, size=12)
 
     def guardar(e):
+        error_lbl.value = ""
         try:
             inv.editar_movimiento(
                 mov_id=mv["id"],
@@ -309,7 +368,8 @@ def _dlg_edit_mov(app, mv, on_refresh):
                 fecha=tf_f.value,
                 usuario=app.usuario)
         except Exception as ex:
-            snack(page, str(ex), "error")
+            error_lbl.value = str(ex)
+            page.update()
             return
         page.pop_dialog()
         snack(page, "Movimiento actualizado", "ok")
@@ -318,12 +378,12 @@ def _dlg_edit_mov(app, mv, on_refresh):
     page.show_dialog(ft.AlertDialog(
         title=ft.Text(f"Editar #{mv['id']}"),
         content=ft.Column(
-            [dd_p, dd_t, tf_c, tf_m, tf_f],
+            [dd_p, dd_t, tf_c, tf_m, tf_f, error_lbl],
             tight=True, width=340, spacing=10,
             scroll=ft.ScrollMode.AUTO),
         actions=[
             ft.TextButton("Cancelar",
-                          on_click=lambda e: page.pop_dialog()),
+                        on_click=lambda e: page.pop_dialog()),
             ft.FilledButton("Guardar", on_click=guardar,
                             style=es.estilo_boton_marca()),
         ],

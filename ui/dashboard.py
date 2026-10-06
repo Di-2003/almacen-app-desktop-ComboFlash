@@ -1,6 +1,7 @@
 """
 Dashboard con métricas del local actual.
-4 tarjetas clicables por color + dinero + actividad + top 5 + últimos.
+4 tarjetas clicables por color + dinero + actividad + movimientos
+por concepto + top 5 + últimos.
 """
 from datetime import datetime, timedelta
 import flet as ft
@@ -42,6 +43,7 @@ def vista_dashboard(app):
     sp = _stats_productos(app.local_id)
     t = inv.totales_local(app.local_id)
     sm = _stats_movimientos(app.local_id)
+    tc = inv.totales_por_concepto(app.local_id)
     top = _top_productos(app.local_id)
     ultimos = _ultimos_movimientos(app.local_id, 8)
 
@@ -127,6 +129,29 @@ def vista_dashboard(app):
             color=es.COLOR_ACENTO), expand=True),
     ], spacing=10)
 
+    # Movimientos por concepto
+    concepto1 = ft.Row([
+        ft.Container(content=tarjeta_metrica(
+            "Ventas", str(tc["ventas"]["n"]),
+            f"${tc['ventas']['monto']:,.2f} · "
+            f"{inv.fmt_cantidad(tc['ventas']['cantidad'])} u",
+            color=es.COLOR_EXITO), expand=True),
+        ft.Container(content=tarjeta_metrica(
+            "Entradas", str(tc["entradas"]["n"]),
+            f"{inv.fmt_cantidad(tc['entradas']['cantidad'])} u",
+            color=es.COLOR_INFO), expand=True),
+    ], spacing=10)
+    concepto2 = ft.Row([
+        ft.Container(content=tarjeta_metrica(
+            "Otras salidas", str(tc["otras_salidas"]["n"]),
+            f"{inv.fmt_cantidad(tc['otras_salidas']['cantidad'])} u",
+            color=es.COLOR_AMBAR), expand=True),
+        ft.Container(content=tarjeta_metrica(
+            "Bajas", str(tc["bajas"]["n"]),
+            f"{inv.fmt_cantidad(tc['bajas']['cantidad'])} u",
+            color=es.COLOR_PELIGRO), expand=True),
+    ], spacing=10)
+
     # Top
     if top:
         medallas = ["🥇", "🥈", "🥉", "4.", "5."]
@@ -162,7 +187,7 @@ def vista_dashboard(app):
             ft.Icons.BAR_CHART, "Sin datos",
             "Aún no hay movimientos en los últimos 30 días.")
 
-        # Últimos
+    # Últimos
     if ultimos:
         filas_ult = []
         for d in ultimos:
@@ -197,7 +222,6 @@ def vista_dashboard(app):
             ft.Icons.HISTORY, "Sin movimientos",
             "Los movimientos aparecerán aquí.")
 
-    # ---- Contenido principal (fuera del if/else anterior) ----
     contenido = ft.Container(
         content=ft.Column(
             controls=[
@@ -209,6 +233,9 @@ def vista_dashboard(app):
                 ft.Container(height=12),
                 _seccion("Actividad"),
                 act, act2,
+                ft.Container(height=12),
+                _seccion("Movimientos por concepto"),
+                concepto1, concepto2,
                 ft.Container(height=12),
                 _seccion("Top 5 (30 días)"),
                 _card(contenido_top),
@@ -238,7 +265,6 @@ def vista_dashboard(app):
         navigation_bar=barra_navegacion(app, 1),
         bgcolor=es.COLOR_FONDO,
     )
-
 
 
 # ============ helpers ============
@@ -290,7 +316,7 @@ def _stats_movimientos(local_id):
     with get_conn() as conn:
         def c(desde=None):
             sql = ("SELECT COUNT(*) AS n FROM movimientos "
-                "WHERE tipo IN ('ENTRADA','SALIDA')")
+                   "WHERE tipo IN ('ENTRADA','SALIDA')")
             params = list(params_base)
             if desde:
                 sql += " AND fecha >= ?"
@@ -399,10 +425,9 @@ def _abrir_lista_productos(app, filtro):
             "Nada por aquí",
             "No hay productos en este filtro."))
 
-    # Diálogo a pantalla casi completa
     dlg = ft.AlertDialog(
         title=ft.Text(f"{titulo}  ({len(productos)})",
-                    size=16, color=es.COLOR_TEXTO),
+                      size=16, color=es.COLOR_TEXTO),
         content=ft.Container(
             content=lst,
             width=340,
@@ -411,12 +436,12 @@ def _abrir_lista_productos(app, filtro):
         ),
         actions=[
             ft.TextButton("Cerrar",
-                        on_click=lambda e: page.pop_dialog()),
+                          on_click=lambda e: page.pop_dialog()),
         ],
         actions_alignment=ft.MainAxisAlignment.END,
     )
     page.show_dialog(dlg)
 
+
 def abrir_dashboard(app):
     app.ir("/dashboard")
-    

@@ -1,30 +1,63 @@
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
 
+# Flet
 .flet/
+storage/
+datos/
+backups/
+logs/
+_test_full/
 
-venv/
-env/
-.venv/
-my_android/
+# Base de datos y backups (NO subir a GitHub)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+almacen.db
+almacen_backup_*.db
+almacen_antes_de_importar_*.db
+almacen.test_datos_previo_*.db
 
+# Excel generados
+inventario_*.xlsx
+test_excel_salida.xlsx
+
+# IDE
 .vscode/
 .idea/
 *.swp
 *.swo
+*~
 
-datos/
-backups/
-logs/
-almacen.db*
-*.db-journal
-*.db-wal
-*.db-shm
-
-test_excel_salida.xlsx
-
+# OS
 .DS_Store
 Thumbs.db
+
+# Entornos virtuales
+venv/
+env/
+ENV/
+.venv/
+
+# Logs
+*.log

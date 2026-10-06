@@ -164,8 +164,10 @@ def _asegurar_defaults(conn) -> None:
     for k, v in {
         "umbral_verde_default":    "50",
         "umbral_amarillo_default": "20",
-        "motivo_default_salida":   "Combos",
+        "motivo_default_salida":   "Venta",
         "tema":                    "oscuro",
+        "tasa_usd":                "1.0",
+        "tasa_eur":                "1.0",   # <-- NUEVO
     }.items():
         conn.execute(
             "INSERT OR IGNORE INTO configuracion(clave,valor) VALUES(?,?)",

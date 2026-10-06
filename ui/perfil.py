@@ -1,14 +1,44 @@
 """
 Perfil de usuario + configuración + administración + datos.
+Incluye tasas USD y EUR (subtítulos dinámicos).
 """
 import flet as ft
 import inventario as inv
 from ui import estilos as es
 from ui.componentes import (
     snack, bottom_sheet, ruta_asset, imagen_opcional, mounted,
+    cerrar_dialogo,
 )
 from ui.principal import barra_navegacion
 
+
+# ============================================================
+# Helpers
+# ============================================================
+
+def _fmt_num(x) -> str:
+    """Formatea un número: 1.0 → '1', 1.5 → '1.5', 250.0 → '250'."""
+    try:
+        f = float(x)
+        if f.is_integer():
+            return str(int(f))
+        return f"{f:g}"
+    except (TypeError, ValueError):
+        return "1"
+
+
+def _subtitulo_tasa(clave: str, moneda: str) -> str:
+    """Devuelve '1 USD = 1 CUP' o '1 USD = 250 CUP'."""
+    try:
+        tasa = float(inv.get_config(clave) or 1.0)
+    except (TypeError, ValueError):
+        tasa = 1.0
+    return f"1 {moneda} = {_fmt_num(tasa)} CUP"
+
+
+# ============================================================
+# Componentes
+# ============================================================
 
 def _tile(icono, titulo, subtitulo, on_click, color=None):
     color = color or es.COLOR_ACENTO
@@ -86,11 +116,13 @@ def _seccion_label(texto):
                    color=es.COLOR_TEXTO_TENUE)
 
 
+# ============================================================
+# Vista
+# ============================================================
+
 def vista_perfil(app):
     u = app.usuario
     page = app.page
-
-    # ---------- acciones ----------
 
     def abrir_perfil(e):
         _modal_editar_perfil(app)
@@ -119,7 +151,13 @@ def vista_perfil(app):
         page.bgcolor = es.COLOR_FONDO
         app.refrescar()
 
-    # ---------- datos (Excel / BD) ----------
+    def configurar_tasa_usd(e):
+        _dlg_tasa(app, "tasa_usd", "Tasa USD → CUP",
+                  "CUP por 1 USD", "USD")
+
+    def configurar_tasa_eur(e):
+        _dlg_tasa(app, "tasa_eur", "Tasa EUR → CUP",
+                  "CUP por 1 EUR", "EUR")
 
     def export_excel(e):
         from ui.exportar import exportar_excel
@@ -129,6 +167,10 @@ def vista_perfil(app):
         from ui.exportar import exportar_backup
         page.run_task(exportar_backup, app)
 
+    def elegir_carpeta(e):
+        from ui.exportar import elegir_carpeta_backup
+        page.run_task(elegir_carpeta_backup, app)
+
     def import_backup(e):
         from ui.exportar import importar_backup
         page.run_task(importar_backup, app)
@@ -136,8 +178,6 @@ def vista_perfil(app):
     def backup_ahora(e):
         from ui.exportar import backup_ahora as bk
         bk(app)
-
-    # ---------- header ----------
 
     logo_fallback = ft.Container(
         content=ft.Icon(ft.Icons.INVENTORY_2,
@@ -180,7 +220,8 @@ def vista_perfil(app):
         border_radius=20,
     )
 
-    # ---------- bloques ----------
+    subtitulo_usd = _subtitulo_tasa("tasa_usd", "USD")
+    subtitulo_eur = _subtitulo_tasa("tasa_eur", "EUR")
 
     bloques = [
         header,
@@ -196,6 +237,14 @@ def vista_perfil(app):
             "Alternar entre tema claro y oscuro",
             es.es_oscuro(), toggle_tema,
             color="#8b5cf6"),
+        _tile(ft.Icons.ATTACH_MONEY, "Tasa de cambio USD",
+              subtitulo_usd,
+              configurar_tasa_usd,
+              color=es.COLOR_AMBAR),
+        _tile(ft.Icons.EURO_SYMBOL, "Tasa de cambio EUR",
+              subtitulo_eur,
+              configurar_tasa_eur,
+              color=es.COLOR_AMBAR),
     ]
 
     if u["rol"] in ("admin", "almacen"):
@@ -221,7 +270,6 @@ def vista_perfil(app):
                   color=es.COLOR_PELIGRO),
         ]
 
-    # Datos: admin + almacén
     if u["rol"] in ("admin", "almacen"):
         bloques += [
             ft.Container(height=16),
@@ -230,13 +278,16 @@ def vista_perfil(app):
                   "Genera el libro completo con todos los locales",
                   export_excel, color=es.COLOR_EXITO),
             _tile(ft.Icons.SAVE, "Exportar copia de seguridad",
-                  "Descarga el archivo .db completo",
+                  "Elige carpeta Y nombre del archivo .db",
                   export_backup, color=es.COLOR_INFO),
+            _tile(ft.Icons.FOLDER_OPEN, "Copia rápida a carpeta",
+                  "Elige SOLO la carpeta; nombre automático",
+                  elegir_carpeta, color=es.COLOR_ACENTO),
             _tile(ft.Icons.UPLOAD, "Importar copia de seguridad",
                   "Reemplaza la BD actual con un archivo .db",
                   import_backup, color=es.COLOR_AMBAR),
             _tile(ft.Icons.ARCHIVE, "Backup interno ahora",
-                  "Copia la BD a la carpeta backups/",
+                  "Copia rápida a la carpeta interna backups/",
                   backup_ahora, color=es.COLOR_TEXTO_SUAVE),
         ]
 
@@ -282,6 +333,75 @@ def vista_perfil(app):
     )
 
 
+# ============================================================
+# Diálogo de tasa
+# ============================================================
+
+def _dlg_tasa(app, clave: str, titulo: str,
+              label: str, moneda: str):
+    page = app.page
+
+    actual_raw = inv.get_config(clave) or "1"
+    actual = _fmt_num(actual_raw)
+
+    tf = ft.TextField(
+        label=label,
+        value=actual,
+        keyboard_type=ft.KeyboardType.NUMBER,
+        **es.estilo_textfield(12), height=54,
+    )
+    error_lbl = ft.Text("", color=es.COLOR_PELIGRO, size=12)
+    dlg_ref = {"dlg": None}
+
+    def guardar(e):
+        error_lbl.value = ""
+        try:
+            valor = float((tf.value or "1").replace(",", "."))
+            if valor <= 0:
+                raise ValueError("Debe ser mayor que 0")
+        except ValueError:
+            error_lbl.value = "Valor inválido"
+            page.update()
+            return
+
+        # 1. Guardar la nueva tasa
+        inv.set_config(clave, str(valor))
+
+        # 2. Cerrar el diálogo y DESPUÉS mostrar snack + refrescar
+        def _despues():
+            snack(page, f"1 {moneda} = {_fmt_num(valor)} CUP", "ok")
+            app.refrescar()
+
+        cerrar_dialogo(page, dlg_ref["dlg"], on_close=_despues)
+
+    def cancelar(e):
+        cerrar_dialogo(page, dlg_ref["dlg"])
+
+    dlg = ft.AlertDialog(
+        title=ft.Text(titulo),
+        content=ft.Column([
+            ft.Text("Se usará para convertir los precios al "
+                    "guardarlos en CUP.",
+                    size=12, color=es.COLOR_TEXTO_SUAVE),
+            ft.Container(height=8),
+            tf,
+            error_lbl,
+        ], tight=True, width=320, spacing=8),
+        actions=[
+            ft.TextButton("Cancelar", on_click=cancelar),
+            ft.FilledButton("Guardar", on_click=guardar,
+                            style=es.estilo_boton_marca()),
+        ],
+        actions_alignment=ft.MainAxisAlignment.END,
+    )
+    dlg_ref["dlg"] = dlg
+    page.show_dialog(dlg)
+
+
+# ============================================================
+# Editar perfil
+# ============================================================
+
 def _modal_editar_perfil(app):
     page = app.page
     import usuarios as um
@@ -305,12 +425,16 @@ def _modal_editar_perfil(app):
         can_reveal_password=True,
         **es.estilo_textfield(12), height=54,
     )
+    error_lbl = ft.Text("", color=es.COLOR_PELIGRO, size=12)
+    dlg_ref = {"dlg": None}
 
     def guardar(e):
+        error_lbl.value = ""
         n = tf_n.value or ""
         c = tf_n2.value or ""
         if (n or c) and n != c:
-            snack(page, "Las contraseñas no coinciden", "error")
+            error_lbl.value = "Las contraseñas no coinciden"
+            page.update()
             return
         try:
             nuevo = um.actualizar_perfil(
@@ -319,24 +443,32 @@ def _modal_editar_perfil(app):
                 password_actual=tf_a.value,
                 nuevo_password=n if n else None)
         except Exception as ex:
-            snack(page, str(ex), "error")
+            error_lbl.value = str(ex)
+            page.update()
             return
         app.usuario = nuevo
-        page.pop_dialog()
-        snack(page, "Perfil actualizado", "ok")
-        app.refrescar()
 
-    page.show_dialog(ft.AlertDialog(
+        def _despues():
+            snack(page, "Perfil actualizado", "ok")
+            app.refrescar()
+
+        cerrar_dialogo(page, dlg_ref["dlg"], on_close=_despues)
+
+    def cancelar(e):
+        cerrar_dialogo(page, dlg_ref["dlg"])
+
+    dlg = ft.AlertDialog(
         title=ft.Text("Editar perfil"),
         content=ft.Column(
-            [tf_u, tf_a, tf_n, tf_n2],
+            [tf_u, tf_a, tf_n, tf_n2, error_lbl],
             tight=True, width=320, spacing=10,
             scroll=ft.ScrollMode.AUTO),
         actions=[
-            ft.TextButton("Cancelar",
-                        on_click=lambda e: page.pop_dialog()),
+            ft.TextButton("Cancelar", on_click=cancelar),
             ft.FilledButton("Guardar", on_click=guardar,
                             style=es.estilo_boton_marca()),
         ],
         actions_alignment=ft.MainAxisAlignment.END,
-    ))
+    )
+    dlg_ref["dlg"] = dlg
+    page.show_dialog(dlg)
