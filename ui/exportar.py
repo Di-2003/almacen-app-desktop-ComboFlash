@@ -1,13 +1,14 @@
 """
 Exportación e importación de datos.
 
+Flujo:
+  1. "Backup Destino": el usuario elige UNA carpeta donde se
+     guardarán los backups. Se guarda como preferencia.
+  2. "Backup Interno": guarda el .db en esa carpeta (con nombre
+     automático). Como Android 11+ usa SAF, se abre el diálogo
+     de guardado ya con el nombre relleno.
+
 - Excel completo (hojas fijas + una por local).
-- Copia de seguridad de la BD (.db):
-    * "Exportar copia de seguridad" → el usuario elige carpeta Y nombre.
-    * "Copia rápida a carpeta"      → el usuario elige SOLO la carpeta;
-                                       el nombre se genera con timestamp.
-    * "Backup interno ahora"        → copia rápida a la carpeta
-                                       interna backups/ (sin diálogo).
 - Importar copia de seguridad (con confirmación por contraseña).
 """
 import shutil
@@ -22,14 +23,18 @@ from seguridad import verificar_password
 from ui import estilos as es
 from ui.componentes import snack
 import excel_sync as excel
+import inventario as inv
+
+
+BACKUP_CARPETA_KEY = "backup_carpeta"
 
 
 # ============================================================
-# Helpers internos
+# Helpers
 # ============================================================
 
 def _cerrar_picker(page, fp):
-    """Intenta quitar el FilePicker de los servicios y refrescar."""
+    """Quita el FilePicker de los servicios y refresca."""
     try:
         page.services.remove(fp)
     except Exception:
@@ -45,8 +50,16 @@ def _nombre_backup() -> str:
             f"{datetime.now().strftime('%Y-%m-%d_%H%M%S')}.db")
 
 
+def get_carpeta_destino() -> str | None:
+    """Devuelve la carpeta configurada, o None."""
+    try:
+        return inv.get_config(BACKUP_CARPETA_KEY)
+    except Exception:
+        return None
+
+
 # ============================================================
-# Exportar Excel
+# 1. Exportar Excel
 # ============================================================
 
 async def exportar_excel(app):
@@ -82,86 +95,7 @@ async def exportar_excel(app):
 
 
 # ============================================================
-# Exportar copia de seguridad (usuario elige carpeta + nombre)
-# ============================================================
-
-async def exportar_backup(app):
-    """
-    Abre un diálogo nativo donde el usuario elige DÓNDE guardar
-    el archivo .db y con qué nombre. NO se guarda automáticamente.
-    """
-    page = app.page
-    if not DB_PATH.exists():
-        snack(page, "No hay BD que exportar", "error")
-        return
-
-    with open(DB_PATH, "rb") as f:
-        data = f.read()
-
-    fp = ft.FilePicker()
-    page.services.append(fp)
-    page.update()
-
-    try:
-        ruta = await fp.save_file(
-            file_name=_nombre_backup(),
-            allowed_extensions=["db"],
-            src_bytes=data,
-        )
-    except Exception as ex:
-        snack(page, f"Error al guardar: {ex}", "error")
-        _cerrar_picker(page, fp)
-        return
-    _cerrar_picker(page, fp)
-
-    if ruta:
-        snack(page, f"Copia guardada ({len(data):,} bytes)", "ok")
-    else:
-        snack(page, "Guardado cancelado", "info")
-
-
-# ============================================================
-# Copia rápida: usuario elige SOLO la carpeta
-# ============================================================
-
-async def elegir_carpeta_backup(app):
-    """
-    Abre un diálogo nativo donde el usuario elige SOLO la carpeta.
-    El nombre del archivo se genera automáticamente con timestamp.
-    """
-    page = app.page
-    if not DB_PATH.exists():
-        snack(page, "No hay BD que exportar", "error")
-        return
-
-    fp = ft.FilePicker()
-    page.services.append(fp)
-    page.update()
-
-    try:
-        carpeta = await fp.get_directory_path(
-            dialog_title="Elige la carpeta para la copia",
-        )
-    except Exception as ex:
-        snack(page, f"Error: {ex}", "error")
-        _cerrar_picker(page, fp)
-        return
-    _cerrar_picker(page, fp)
-
-    if not carpeta:
-        snack(page, "Selección cancelada", "info")
-        return
-
-    destino = Path(carpeta) / _nombre_backup()
-    try:
-        shutil.copy2(DB_PATH, destino)
-        snack(page, f"Copia guardada en {carpeta}", "ok")
-    except Exception as ex:
-        snack(page, f"Error al copiar: {ex}", "error")
-
-
-# ============================================================
-# Importar copia de seguridad
+# 2. Importar copia de seguridad
 # ============================================================
 
 async def importar_backup(app):
@@ -255,18 +189,15 @@ def _confirmar_import(app, data):
 def _hacer_import(app, data):
     page = app.page
     try:
-        # 1. Guardar la BD actual por si acaso
         if DB_PATH.exists():
             sello = datetime.now().strftime("%Y-%m-%d_%H%M%S")
             destino = (BACKUPS /
                        f"almacen_antes_de_importar_{sello}.db")
             shutil.copy2(DB_PATH, destino)
 
-        # 2. Sobrescribir
         with open(DB_PATH, "wb") as f:
             f.write(data)
 
-        # 3. Asegurar esquema actualizado
         inicializar_db()
     except Exception as ex:
         snack(page, f"Error al importar: {ex}", "error")
@@ -279,15 +210,103 @@ def _hacer_import(app, data):
 
 
 # ============================================================
-# Backup interno (a la carpeta interna backups/, sin diálogo)
+# 3. Backup Destino (elegir carpeta, se guarda)
 # ============================================================
 
+async def backup_destino(app):
+    """
+    Abre el selector nativo de carpetas (SAF). El usuario elige
+    la carpeta donde se guardarán los backups. Se guarda como
+    preferencia para que "Backup Interno" la use después.
+    """
+    page = app.page
+
+    fp = ft.FilePicker()
+    page.services.append(fp)
+    page.update()
+
+    try:
+        carpeta = await fp.get_directory_path(
+            dialog_title="Elige la carpeta destino para backups",
+        )
+    except Exception as ex:
+        snack(page, f"Error: {ex}", "error")
+        _cerrar_picker(page, fp)
+        return
+    _cerrar_picker(page, fp)
+
+    if not carpeta:
+        snack(page, "Selección cancelada", "info")
+        return
+
+    inv.set_config(BACKUP_CARPETA_KEY, carpeta)
+    snack(page, "Carpeta destino guardada", "ok")
+
+
+# ============================================================
+# 4. Backup Interno (guardar el .db en la carpeta destino)
+# ============================================================
+
+async def backup_interno(app):
+    """
+    Guarda el .db en la carpeta destino configurada.
+    Como Android 11+ no permite escribir silenciosamente en una
+    carpeta SAF (necesita confirmación del usuario), se abre el
+    diálogo de guardado con el nombre ya relleno.
+    El usuario solo tiene que tocar "Guardar".
+    """
+    page = app.page
+
+    if not DB_PATH.exists():
+        snack(page, "No hay BD que respaldar", "error")
+        return
+
+    carpeta = get_carpeta_destino()
+    if not carpeta:
+        snack(page,
+              "Primero configura la carpeta en «Backup Destino»",
+              "warn")
+        return
+
+    with open(DB_PATH, "rb") as f:
+        data = f.read()
+
+    fp = ft.FilePicker()
+    page.services.append(fp)
+    page.update()
+
+    try:
+        ruta = await fp.save_file(
+            file_name=_nombre_backup(),
+            allowed_extensions=["db"],
+            src_bytes=data,
+        )
+    except Exception as ex:
+        snack(page, f"Error al guardar: {ex}", "error")
+        _cerrar_picker(page, fp)
+        return
+    _cerrar_picker(page, fp)
+
+    if ruta:
+        snack(page, f"Backup guardado ({len(data):,} bytes)", "ok")
+    else:
+        snack(page, "Guardado cancelado", "info")
+
+
+# ============================================================
+# Aliases retro-compatibles
+# ============================================================
+
+async def exportar_backup(app):
+    await backup_interno(app)
+
+
+async def elegir_carpeta_backup(app):
+    await backup_destino(app)
+
+
 def backup_ahora(app):
-    """
-    Copia rápida a la carpeta interna backups/ SIN diálogo.
-    Útil si el usuario quiere una copia interna de seguridad sin
-    salir de la app. Retención: 30 días.
-    """
+    """Copia interna a la carpeta privada backups/ (sin diálogo)."""
     page = app.page
     from backup import hacer_backup
     try:

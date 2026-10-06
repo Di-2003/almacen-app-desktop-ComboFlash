@@ -1,6 +1,6 @@
 """
 Perfil de usuario + configuración + administración + datos.
-Incluye tasas USD y EUR (subtítulos dinámicos).
+Tasas USD/EUR. Backups: carpeta destino + guardado.
 """
 import flet as ft
 import inventario as inv
@@ -28,7 +28,6 @@ def _fmt_num(x) -> str:
 
 
 def _subtitulo_tasa(clave: str, moneda: str) -> str:
-    """Devuelve '1 USD = 1 CUP' o '1 USD = 250 CUP'."""
     try:
         tasa = float(inv.get_config(clave) or 1.0)
     except (TypeError, ValueError):
@@ -56,7 +55,9 @@ def _tile(icono, titulo, subtitulo, on_click, color=None):
                                 weight=ft.FontWeight.W_600,
                                 color=es.COLOR_TEXTO),
                         ft.Text(subtitulo, size=11,
-                                color=es.COLOR_TEXTO_SUAVE)
+                                color=es.COLOR_TEXTO_SUAVE,
+                                max_lines=2,
+                                overflow=ft.TextOverflow.ELLIPSIS)
                         if subtitulo else ft.Container(height=1),
                     ],
                     spacing=2, expand=True,
@@ -117,6 +118,32 @@ def _seccion_label(texto):
 
 
 # ============================================================
+# Callbacks async envueltos (para page.run_task)
+# ============================================================
+
+async def _task_backup_destino(app):
+    from ui.exportar import backup_destino
+    await backup_destino(app)
+    # Refrescar para actualizar la vista si es necesario
+    app.refrescar()
+
+
+async def _task_backup_interno(app):
+    from ui.exportar import backup_interno
+    await backup_interno(app)
+
+
+async def _task_exportar_excel(app):
+    from ui.exportar import exportar_excel
+    await exportar_excel(app)
+
+
+async def _task_importar_backup(app):
+    from ui.exportar import importar_backup
+    await importar_backup(app)
+
+
+# ============================================================
 # Vista
 # ============================================================
 
@@ -159,25 +186,19 @@ def vista_perfil(app):
         _dlg_tasa(app, "tasa_eur", "Tasa EUR → CUP",
                   "CUP por 1 EUR", "EUR")
 
-    def export_excel(e):
-        from ui.exportar import exportar_excel
-        page.run_task(exportar_excel, app)
+    # ---- Datos (callbacks que despachan tasks async) ----
 
-    def export_backup(e):
-        from ui.exportar import exportar_backup
-        page.run_task(exportar_backup, app)
+    def cb_exportar_excel(e):
+        page.run_task(_task_exportar_excel, app)
 
-    def elegir_carpeta(e):
-        from ui.exportar import elegir_carpeta_backup
-        page.run_task(elegir_carpeta_backup, app)
+    def cb_importar_backup(e):
+        page.run_task(_task_importar_backup, app)
 
-    def import_backup(e):
-        from ui.exportar import importar_backup
-        page.run_task(importar_backup, app)
+    def cb_backup_destino(e):
+        page.run_task(_task_backup_destino, app)
 
-    def backup_ahora(e):
-        from ui.exportar import backup_ahora as bk
-        bk(app)
+    def cb_backup_interno(e):
+        page.run_task(_task_backup_interno, app)
 
     logo_fallback = ft.Container(
         content=ft.Icon(ft.Icons.INVENTORY_2,
@@ -274,21 +295,22 @@ def vista_perfil(app):
         bloques += [
             ft.Container(height=16),
             _seccion_label("Datos"),
+            # 1. Excel
             _tile(ft.Icons.TABLE_CHART, "Exportar Excel",
                   "Genera el libro completo con todos los locales",
-                  export_excel, color=es.COLOR_EXITO),
-            _tile(ft.Icons.SAVE, "Exportar copia de seguridad",
-                  "Elige carpeta Y nombre del archivo .db",
-                  export_backup, color=es.COLOR_INFO),
-            _tile(ft.Icons.FOLDER_OPEN, "Copia rápida a carpeta",
-                  "Elige SOLO la carpeta; nombre automático",
-                  elegir_carpeta, color=es.COLOR_ACENTO),
+                  cb_exportar_excel, color=es.COLOR_EXITO),
+            # 2. Importar
             _tile(ft.Icons.UPLOAD, "Importar copia de seguridad",
                   "Reemplaza la BD actual con un archivo .db",
-                  import_backup, color=es.COLOR_AMBAR),
-            _tile(ft.Icons.ARCHIVE, "Backup interno ahora",
-                  "Copia rápida a la carpeta interna backups/",
-                  backup_ahora, color=es.COLOR_TEXTO_SUAVE),
+                  cb_importar_backup, color=es.COLOR_AMBAR),
+            # 3. Backup Destino
+            _tile(ft.Icons.FOLDER_OPEN, "Backup Destino",
+                  "Elige carpeta destino de backup",
+                  cb_backup_destino, color=es.COLOR_INFO),
+            # 4. Backup Interno
+            _tile(ft.Icons.SAVE, "Backup Interno",
+                  "Backup en la carpeta destino",
+                  cb_backup_interno, color=es.COLOR_ACENTO),
         ]
 
     bloques += [
@@ -364,10 +386,8 @@ def _dlg_tasa(app, clave: str, titulo: str,
             page.update()
             return
 
-        # 1. Guardar la nueva tasa
         inv.set_config(clave, str(valor))
 
-        # 2. Cerrar el diálogo y DESPUÉS mostrar snack + refrescar
         def _despues():
             snack(page, f"1 {moneda} = {_fmt_num(valor)} CUP", "ok")
             app.refrescar()

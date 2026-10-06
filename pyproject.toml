@@ -16,6 +16,17 @@ assets = ["recursos"]
 [tool.flet.icons]
 android = "recursos/icon.png"
 
+# ─── PERMISOS ANDROID ──────────────────────────────────────
+# Necesarios para que el FilePicker y el guardado de backups
+# funcionen en Android 11+ (Scoped Storage).
+# READ/WRITE se mantienen para compatibilidad con Android 9-10.
+# MANAGE_EXTERNAL_STORAGE permite escribir en la carpeta elegida
+# por el usuario sin restricciones de SAF (útil como respaldo).
+[tool.flet.android.permission]
+"android.permission.READ_EXTERNAL_STORAGE" = true
+"android.permission.WRITE_EXTERNAL_STORAGE" = true
+"android.permission.MANAGE_EXTERNAL_STORAGE" = true
+
 # ─── SPLASH SCREEN (opcional) ───────────────────────────────
 # Cuando tengas la imagen, colócala en recursos/splash.png
 # y descomenta el bloque de abajo. Aparecerá como pantalla
@@ -28,6 +39,3 @@ android = "recursos/icon.png"
 # ios = false
 # web = false
 # ─────────────────────────────────────────────────────────────
-
-[tool.flet.flutter.pubspec.dependency_overrides]
-jni = "1.1.0"
