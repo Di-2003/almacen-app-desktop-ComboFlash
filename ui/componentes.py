@@ -4,10 +4,6 @@ import os
 from pathlib import Path
 
 
-# ============================================================
-# Rutas de assets
-# ============================================================
-
 def ruta_asset(nombre: str) -> str:
     base = os.environ.get("FLET_ASSETS_DIR")
     if base:
@@ -15,25 +11,18 @@ def ruta_asset(nombre: str) -> str:
     return f"recursos/{nombre}"
 
 
-def imagen_opcional(nombre: str, fallback: ft.Control,
-                    width=None, height=None,
-                    fit=ft.BoxFit.CONTAIN) -> ft.Control:
+def imagen_opcional(nombre, fallback, width=None, height=None,
+                    fit=ft.BoxFit.CONTAIN):
     ruta = ruta_asset(nombre)
     try:
         if Path(ruta).exists():
-            return ft.Image(src=ruta, fit=fit,
-                            width=width, height=height)
+            return ft.Image(src=ruta, fit=fit, width=width, height=height)
     except Exception:
         pass
     return fallback
 
 
-# ============================================================
-# Chips y badges (solo puntos de color, sin texto)
-# ============================================================
-
 def chip_estado(color: str) -> ft.Container:
-    """Círculo de color según estado. Sin texto."""
     return ft.Container(
         width=14, height=14,
         bgcolor=es.COLOR_ESTADO_TEXTO[color],
@@ -43,7 +32,6 @@ def chip_estado(color: str) -> ft.Container:
 
 
 def chip_inactivo() -> ft.Container:
-    """Círculo gris para productos inactivos."""
     return ft.Container(
         width=14, height=14,
         bgcolor=es.COLOR_TEXTO_TENUE,
@@ -63,24 +51,16 @@ def badge(texto, color=None) -> ft.Container:
     )
 
 
-# ============================================================
-# Tarjetas
-# ============================================================
-
-def tarjeta_metrica(titulo, valor, subtitulo="",
-                    color=None, on_tap=None):
+def tarjeta_metrica(titulo, valor, subtitulo="", color=None, on_tap=None):
     color = color or es.COLOR_ACENTO
     contenido = ft.Column(
         [
-            ft.Row(
-                [
-                    ft.Container(width=8, height=8, bgcolor=color,
-                                 border_radius=4),
-                    ft.Text(titulo, size=11, color=es.COLOR_TEXTO_SUAVE,
-                            weight=ft.FontWeight.W_600),
-                ],
-                spacing=6, tight=True,
-            ),
+            ft.Row([
+                ft.Container(width=8, height=8, bgcolor=color,
+                             border_radius=4),
+                ft.Text(titulo, size=11, color=es.COLOR_TEXTO_SUAVE,
+                        weight=ft.FontWeight.W_600),
+            ], spacing=6, tight=True),
             ft.Text(valor, size=24, weight=ft.FontWeight.BOLD,
                     color=es.COLOR_TEXTO),
             ft.Text(subtitulo, size=10, color=es.COLOR_TEXTO_TENUE)
@@ -108,23 +88,20 @@ def tarjeta_metrica(titulo, valor, subtitulo="",
 def fila_producto(prod, on_tap=None) -> ft.Container:
     import inventario as inv
     color = inv.color_de_producto(prod)
-    pc = float(prod.get("precio_costo", 0) or 0)
-    pv = float(prod.get("precio_unitario", 0) or 0)
+    pc_cup = float(prod.get("precio_costo", 0) or 0)
+    pu_cup = float(prod.get("precio_unitario", 0) or 0)
+    mc = (prod.get("moneda_costo") or "CUP").upper()
+    mv = (prod.get("moneda_venta") or "CUP").upper()
     stock_txt = inv.fmt_cantidad(prod["stock"])
     codigo = (prod.get("codigo") or "").strip()
     esta_activo = prod.get("activo", 1) == 1
 
     cabecera = ft.Row(
         [
-            ft.Text(
-                prod["nombre"],
-                size=15,
-                weight=ft.FontWeight.W_600,
-                color=es.COLOR_TEXTO,
-                max_lines=2,
-                overflow=ft.TextOverflow.ELLIPSIS,
-                expand=True,
-            ),
+            ft.Text(prod["nombre"], size=15,
+                    weight=ft.FontWeight.W_600,
+                    color=es.COLOR_TEXTO, max_lines=2,
+                    overflow=ft.TextOverflow.ELLIPSIS, expand=True),
             badge(codigo, es.COLOR_ACENTO) if codigo
             else ft.Container(width=1),
         ],
@@ -132,46 +109,43 @@ def fila_producto(prod, on_tap=None) -> ft.Container:
         vertical_alignment=ft.CrossAxisAlignment.START,
     )
 
-    def _dato(label, valor):
-        return ft.Column(
-            [
-                ft.Text(label, size=10, color=es.COLOR_TEXTO_TENUE),
-                ft.Text(valor, size=13, color=es.COLOR_TEXTO,
-                        weight=ft.FontWeight.W_600),
-            ],
-            spacing=2,
-        )
+    def _dato(label, valor, sub=""):
+        hijos = [
+            ft.Text(label, size=10, color=es.COLOR_TEXTO_TENUE),
+            ft.Text(valor, size=13, color=es.COLOR_TEXTO,
+                    weight=ft.FontWeight.W_600),
+        ]
+        if sub:
+            hijos.append(ft.Text(sub, size=9,
+                                 color=es.COLOR_ACENTO))
+        return ft.Column(hijos, spacing=2)
+
+    # Sub-etiqueta de moneda si NO es CUP
+    sub_costo = f"({mc})" if mc != "CUP" else ""
+    sub_venta = f"({mv})" if mv != "CUP" else ""
 
     fila_datos = ft.Row(
         [
-            ft.Container(content=_dato("Stock", stock_txt),
-                        expand=True),
-            ft.Container(
-                content=_dato("Costo", f"${inv.fmt_precio(pc)}"),
-                expand=True),
-            ft.Container(
-                content=_dato("Venta", f"${inv.fmt_precio(pv)}"),
-                expand=True),
+            ft.Container(content=_dato("Stock", stock_txt), expand=True),
+            ft.Container(content=_dato("Costo", f"${inv.fmt_precio(pc_cup)}",
+                                       sub_costo), expand=True),
+            ft.Container(content=_dato("Venta", f"${inv.fmt_precio(pu_cup)}",
+                                       sub_venta), expand=True),
         ],
         spacing=0,
     )
 
-    chip_estado_ctrl = (chip_estado(color) if esta_activo
-                        else chip_inactivo())
+    chip_ctrl = chip_estado(color) if esta_activo else chip_inactivo()
 
     return ft.Container(
-        content=ft.Column(
-            [
-                ft.Row([
-                    ft.Container(cabecera, expand=True),
-                    chip_estado_ctrl,
-                ], spacing=8,
-                    vertical_alignment=ft.CrossAxisAlignment.START),
-                ft.Container(height=8),
-                fila_datos,
-            ],
-            spacing=0,
-        ),
+        content=ft.Column([
+            ft.Row([
+                ft.Container(cabecera, expand=True),
+                chip_ctrl,
+            ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.START),
+            ft.Container(height=8),
+            fila_datos,
+        ], spacing=0),
         padding=ft.Padding.only(left=16, top=14, right=14, bottom=14),
         bgcolor=es.COLOR_SUPERFICIE,
         border_radius=14,
@@ -189,9 +163,9 @@ def fila_producto(prod, on_tap=None) -> ft.Container:
 
 def caja_info(texto, tipo="info") -> ft.Container:
     colores = {
-        "info":  (es.COLOR_INFO_SUAVE, es.COLOR_INFO),
-        "ok":    (es.COLOR_EXITO_SUAVE, es.COLOR_EXITO),
-        "warn":  (es.COLOR_AMBAR_SUAVE, es.COLOR_AMBAR),
+        "info": (es.COLOR_INFO_SUAVE, es.COLOR_INFO),
+        "ok": (es.COLOR_EXITO_SUAVE, es.COLOR_EXITO),
+        "warn": (es.COLOR_AMBAR_SUAVE, es.COLOR_AMBAR),
         "error": (es.COLOR_PELIGRO_SUAVE, es.COLOR_PELIGRO),
     }
     bg, fg = colores.get(tipo, colores["info"])
@@ -205,26 +179,17 @@ def caja_info(texto, tipo="info") -> ft.Container:
 
 def campo_busqueda(hint="Buscar…", on_change=None, valor=""):
     tf = ft.TextField(
-        value=valor,
-        hint_text=hint,
+        value=valor, hint_text=hint,
         border=es.borde_textfield_none(),
-        filled=False,
-        bgcolor="transparent",
+        filled=False, bgcolor="transparent",
         content_padding=ft.Padding.symmetric(horizontal=0, vertical=12),
-        on_change=on_change,
-        expand=True,
-        text_size=14,
+        on_change=on_change, expand=True, text_size=14,
     )
     cont = ft.Container(
-        content=ft.Row(
-            [
-                ft.Icon(ft.Icons.SEARCH,
-                        color=es.COLOR_TEXTO_TENUE, size=20),
-                tf,
-            ],
-            spacing=6,
-            vertical_alignment=ft.CrossAxisAlignment.CENTER,
-        ),
+        content=ft.Row([
+            ft.Icon(ft.Icons.SEARCH, color=es.COLOR_TEXTO_TENUE, size=20),
+            tf,
+        ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER),
         bgcolor=es.COLOR_SUPERFICIE,
         border_radius=26,
         padding=ft.Padding.symmetric(horizontal=16, vertical=2),
@@ -240,45 +205,27 @@ def campo_busqueda(hint="Buscar…", on_change=None, valor=""):
 
 def empty_state(icono, titulo, subtitulo="") -> ft.Container:
     return ft.Container(
-        content=ft.Column(
-            [
-                ft.Container(
-                    content=ft.Icon(icono, size=36,
-                                    color=es.COLOR_ACENTO),
-                    bgcolor=es.COLOR_ACENTO_SUAVE,
-                    padding=18,
-                    border_radius=100,
-                ),
-                ft.Container(height=10),
-                ft.Text(titulo, size=15,
-                        weight=ft.FontWeight.W_600,
-                        color=es.COLOR_TEXTO,
-                        text_align=ft.TextAlign.CENTER,
-                        max_lines=2,
-                        overflow=ft.TextOverflow.ELLIPSIS),
-                ft.Text(subtitulo, size=12,
-                        color=es.COLOR_TEXTO_SUAVE,
-                        text_align=ft.TextAlign.CENTER,
-                        max_lines=3,
-                        overflow=ft.TextOverflow.ELLIPSIS)
-                if subtitulo else ft.Container(height=1),
-            ],
-            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-            spacing=6,
-            tight=True,
-        ),
-        padding=24,
-        alignment=ft.Alignment.CENTER,
+        content=ft.Column([
+            ft.Container(
+                content=ft.Icon(icono, size=36, color=es.COLOR_ACENTO),
+                bgcolor=es.COLOR_ACENTO_SUAVE,
+                padding=18, border_radius=100,
+            ),
+            ft.Container(height=10),
+            ft.Text(titulo, size=15, weight=ft.FontWeight.W_600,
+                    color=es.COLOR_TEXTO, text_align=ft.TextAlign.CENTER,
+                    max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
+            ft.Text(subtitulo, size=12, color=es.COLOR_TEXTO_SUAVE,
+                    text_align=ft.TextAlign.CENTER, max_lines=3,
+                    overflow=ft.TextOverflow.ELLIPSIS)
+            if subtitulo else ft.Container(height=1),
+        ], horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            spacing=6, tight=True),
+        padding=24, alignment=ft.Alignment.CENTER,
     )
 
 
-# ============================================================
-# Bottom sheet
-# ============================================================
-
-def bottom_sheet(content: ft.Control,
-                page: ft.Page | None = None,
-                alto_max_pct: float = 0.85) -> ft.BottomSheet:
+def bottom_sheet(content, page=None, alto_max_pct=0.85) -> ft.BottomSheet:
     alto = None
     if page is not None:
         try:
@@ -291,23 +238,14 @@ def bottom_sheet(content: ft.Control,
                 alto = int(h * alto_max_pct)
         except Exception:
             pass
-
-    col = ft.Column(
-        [
-            ft.Row(
-                [ft.Container(width=40, height=4,
+    col = ft.Column([
+        ft.Row([ft.Container(width=40, height=4,
                               bgcolor=es.COLOR_BORDE_FUERTE,
                               border_radius=2)],
-                alignment=ft.MainAxisAlignment.CENTER,
-            ),
-            ft.Container(height=8),
-            ft.Container(content=content, expand=True),
-        ],
-        tight=True,
-        spacing=0,
-        scroll=ft.ScrollMode.AUTO,
-    )
-
+               alignment=ft.MainAxisAlignment.CENTER),
+        ft.Container(height=8),
+        ft.Container(content=content, expand=True),
+    ], tight=True, spacing=0, scroll=ft.ScrollMode.AUTO)
     cont = ft.Container(
         content=col,
         padding=ft.Padding.only(left=16, top=10, right=16, bottom=20),
@@ -316,23 +254,15 @@ def bottom_sheet(content: ft.Control,
     )
     if alto:
         cont.height = alto
-
     return ft.BottomSheet(content=cont)
 
 
-# ============================================================
-# Snack flotante
-# ============================================================
-
 def snack(page, texto, tipo="info"):
     colores = {
-        "info":  "#374151",
-        "ok":    "#16a34a",
-        "error": "#dc2626",
-        "warn":  "#ca8a04",
+        "info": "#374151", "ok": "#16a34a",
+        "error": "#dc2626", "warn": "#ca8a04",
     }
-
-    snack_bar = ft.SnackBar(
+    sb = ft.SnackBar(
         content=ft.Text(texto, color="white", size=13),
         bgcolor=colores.get(tipo, "#374151"),
         duration=15000,
@@ -340,63 +270,34 @@ def snack(page, texto, tipo="info"):
         show_close_icon=True,
         close_icon_color="white",
     )
-
     try:
-        page.open(snack_bar)
+        page.open(sb)
     except Exception:
         try:
-            page.show_dialog(snack_bar)
+            page.show_dialog(sb)
         except Exception:
             pass
 
 
-# ============================================================
-# Cerrar diálogo + refrescar (SIN colgar)
-# ============================================================
-#
-# Problema: cuando llamas a app.refrescar() inmediatamente después
-# de cerrar un diálogo, Flet no alcanza a procesar el cierre y la
-# ventana se queda colgada.
-#
-# Solución: cerrar el diálogo primero, hacer page.update(), y
-# luego ejecutar el callback en un task diferido.
-# ============================================================
-
 def cerrar_dialogo(page, control=None, on_close=None):
-    """
-    Cierra un diálogo/bottom sheet.
-
-    - `control`: el diálogo a cerrar (opcional, se refuerza el cierre).
-    - `on_close`: callback opcional que se ejecuta DESPUÉS del cierre,
-      en un task diferido. Ideal para `app.refrescar`.
-    """
-    # 1. Marcar como cerrado
     if control is not None:
         try:
             control.open = False
         except Exception:
             pass
-
-    # 2. Intentar page.pop_dialog
     try:
         page.pop_dialog()
     except Exception:
         pass
-
-    # 3. Intentar page.close (por si existe)
     if control is not None:
         try:
             page.close(control)
         except Exception:
             pass
-
-    # 4. Forzar update
     try:
         page.update()
     except Exception:
         pass
-
-    # 5. Ejecutar callback en task diferido (evita el cuelgue)
     if on_close is not None:
         async def _deferred():
             import asyncio
@@ -408,11 +309,9 @@ def cerrar_dialogo(page, control=None, on_close=None):
                 on_close()
             except Exception:
                 pass
-
         try:
             page.run_task(_deferred)
         except Exception:
-            # Fallback si run_task no está disponible
             try:
                 on_close()
             except Exception:
@@ -424,9 +323,7 @@ def cursor_al_final(e):
     try:
         texto = tf.value or ""
         tf.selection = ft.TextSelection(
-            base_offset=len(texto),
-            extent_offset=len(texto),
-        )
+            base_offset=len(texto), extent_offset=len(texto))
         tf.update()
     except Exception:
         pass

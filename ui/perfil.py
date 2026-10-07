@@ -1,23 +1,16 @@
 """
 Perfil de usuario + configuración + administración + datos.
-Tasas USD/EUR. Backups: carpeta destino + guardado.
+Incluye selector de moneda de visualización y recálculo automático
+de precios al cambiar las tasas.
 """
 import flet as ft
 import inventario as inv
 from ui import estilos as es
-from ui.componentes import (
-    snack, bottom_sheet, ruta_asset, imagen_opcional, mounted,
-    cerrar_dialogo,
-)
+from ui.componentes import snack, imagen_opcional, cerrar_dialogo
 from ui.principal import barra_navegacion
 
 
-# ============================================================
-# Helpers
-# ============================================================
-
 def _fmt_num(x) -> str:
-    """Formatea un número: 1.0 → '1', 1.5 → '1.5', 250.0 → '250'."""
     try:
         f = float(x)
         if f.is_integer():
@@ -27,7 +20,7 @@ def _fmt_num(x) -> str:
         return "1"
 
 
-def _subtitulo_tasa(clave: str, moneda: str) -> str:
+def _subtitulo_tasa(clave, moneda):
     try:
         tasa = float(inv.get_config(clave) or 1.0)
     except (TypeError, ValueError):
@@ -35,96 +28,58 @@ def _subtitulo_tasa(clave: str, moneda: str) -> str:
     return f"1 {moneda} = {_fmt_num(tasa)} CUP"
 
 
-# ============================================================
-# Componentes
-# ============================================================
-
 def _tile(icono, titulo, subtitulo, on_click, color=None):
     color = color or es.COLOR_ACENTO
     return ft.Container(
-        content=ft.Row(
-            [
-                ft.Container(
-                    content=ft.Icon(icono, color=color, size=22),
-                    bgcolor=ft.Colors.with_opacity(0.15, color),
-                    padding=10, border_radius=12,
-                ),
-                ft.Column(
-                    [
-                        ft.Text(titulo, size=14,
-                                weight=ft.FontWeight.W_600,
-                                color=es.COLOR_TEXTO),
-                        ft.Text(subtitulo, size=11,
-                                color=es.COLOR_TEXTO_SUAVE,
-                                max_lines=2,
-                                overflow=ft.TextOverflow.ELLIPSIS)
-                        if subtitulo else ft.Container(height=1),
-                    ],
-                    spacing=2, expand=True,
-                ),
-                ft.Icon(ft.Icons.CHEVRON_RIGHT,
-                        color=es.COLOR_TEXTO_TENUE, size=20),
-            ],
-            spacing=12,
-            vertical_alignment=ft.CrossAxisAlignment.CENTER,
-        ),
-        padding=14,
-        bgcolor=es.COLOR_SUPERFICIE,
+        content=ft.Row([
+            ft.Container(
+                content=ft.Icon(icono, color=color, size=22),
+                bgcolor=ft.Colors.with_opacity(0.15, color),
+                padding=10, border_radius=12),
+            ft.Column([
+                ft.Text(titulo, size=14, weight=ft.FontWeight.W_600,
+                        color=es.COLOR_TEXTO),
+                ft.Text(subtitulo, size=11, color=es.COLOR_TEXTO_SUAVE,
+                        max_lines=2, overflow=ft.TextOverflow.ELLIPSIS)
+                if subtitulo else ft.Container(height=1),
+            ], spacing=2, expand=True),
+            ft.Icon(ft.Icons.CHEVRON_RIGHT,
+                    color=es.COLOR_TEXTO_TENUE, size=20),
+        ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        padding=14, bgcolor=es.COLOR_SUPERFICIE,
         border=ft.Border.all(1, es.COLOR_BORDE),
-        border_radius=14,
-        on_click=on_click,
-        ink=True,
-    )
+        border_radius=14, on_click=on_click, ink=True)
 
 
 def _tile_switch(icono, titulo, subtitulo, valor, on_change, color=None):
     color = color or es.COLOR_ACENTO
     return ft.Container(
-        content=ft.Row(
-            [
-                ft.Container(
-                    content=ft.Icon(icono, color=color, size=22),
-                    bgcolor=ft.Colors.with_opacity(0.15, color),
-                    padding=10, border_radius=12,
-                ),
-                ft.Column(
-                    [
-                        ft.Text(titulo, size=14,
-                                weight=ft.FontWeight.W_600,
-                                color=es.COLOR_TEXTO),
-                        ft.Text(subtitulo, size=11,
-                                color=es.COLOR_TEXTO_SUAVE)
-                        if subtitulo else ft.Container(height=1),
-                    ],
-                    spacing=2, expand=True,
-                ),
-                ft.Switch(value=valor, on_change=on_change,
-                          active_color=es.COLOR_ACENTO),
-            ],
-            spacing=12,
-            vertical_alignment=ft.CrossAxisAlignment.CENTER,
-        ),
-        padding=14,
-        bgcolor=es.COLOR_SUPERFICIE,
-        border=ft.Border.all(1, es.COLOR_BORDE),
-        border_radius=14,
-    )
+        content=ft.Row([
+            ft.Container(
+                content=ft.Icon(icono, color=color, size=22),
+                bgcolor=ft.Colors.with_opacity(0.15, color),
+                padding=10, border_radius=12),
+            ft.Column([
+                ft.Text(titulo, size=14, weight=ft.FontWeight.W_600,
+                        color=es.COLOR_TEXTO),
+                ft.Text(subtitulo, size=11, color=es.COLOR_TEXTO_SUAVE)
+                if subtitulo else ft.Container(height=1),
+            ], spacing=2, expand=True),
+            ft.Switch(value=valor, on_change=on_change,
+                      active_color=es.COLOR_ACENTO),
+        ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        padding=14, bgcolor=es.COLOR_SUPERFICIE,
+        border=ft.Border.all(1, es.COLOR_BORDE), border_radius=14)
 
 
 def _seccion_label(texto):
-    return ft.Text(texto.upper(), size=11,
-                   weight=ft.FontWeight.BOLD,
+    return ft.Text(texto.upper(), size=11, weight=ft.FontWeight.BOLD,
                    color=es.COLOR_TEXTO_TENUE)
 
-
-# ============================================================
-# Callbacks async envueltos (para page.run_task)
-# ============================================================
 
 async def _task_backup_destino(app):
     from ui.exportar import backup_destino
     await backup_destino(app)
-    # Refrescar para actualizar la vista si es necesario
     app.refrescar()
 
 
@@ -142,10 +97,6 @@ async def _task_importar_backup(app):
     from ui.exportar import importar_backup
     await importar_backup(app)
 
-
-# ============================================================
-# Vista
-# ============================================================
 
 def vista_perfil(app):
     u = app.usuario
@@ -178,6 +129,9 @@ def vista_perfil(app):
         page.bgcolor = es.COLOR_FONDO
         app.refrescar()
 
+    def configurar_moneda_visualizacion(e):
+        _dlg_moneda_visualizacion(app)
+
     def configurar_tasa_usd(e):
         _dlg_tasa(app, "tasa_usd", "Tasa USD → CUP",
                   "CUP por 1 USD", "USD")
@@ -185,8 +139,6 @@ def vista_perfil(app):
     def configurar_tasa_eur(e):
         _dlg_tasa(app, "tasa_eur", "Tasa EUR → CUP",
                   "CUP por 1 EUR", "EUR")
-
-    # ---- Datos (callbacks que despachan tasks async) ----
 
     def cb_exportar_excel(e):
         page.run_task(_task_exportar_excel, app)
@@ -203,46 +155,31 @@ def vista_perfil(app):
     logo_fallback = ft.Container(
         content=ft.Icon(ft.Icons.INVENTORY_2,
                         color=es.COLOR_ACENTO, size=30),
-        width=56, height=56, alignment=ft.Alignment.CENTER,
-    )
-    logo = imagen_opcional("icon.png", logo_fallback,
-                           width=56, height=56)
+        width=56, height=56, alignment=ft.Alignment.CENTER)
+    logo = imagen_opcional("icon.png", logo_fallback, width=56, height=56)
 
     header = ft.Container(
-        content=ft.Row(
-            [
-                logo,
-                ft.Column(
-                    [
-                        ft.Text(u["username"], size=20,
-                                weight=ft.FontWeight.BOLD,
-                                color=es.COLOR_TEXTO),
-                        ft.Container(
-                            content=ft.Text(
-                                u["rol"].capitalize(),
-                                size=11,
-                                color=es.COLOR_MARCA_NEGRO,
-                                weight=ft.FontWeight.BOLD),
-                            bgcolor=es.COLOR_ACENTO,
-                            padding=ft.Padding.symmetric(
-                                horizontal=10, vertical=3),
-                            border_radius=20,
-                        ),
-                    ],
-                    spacing=6, expand=True,
-                ),
-            ],
-            spacing=14,
-            vertical_alignment=ft.CrossAxisAlignment.CENTER,
-        ),
-        padding=20,
-        bgcolor=es.COLOR_SUPERFICIE,
-        border=ft.Border.all(1, es.COLOR_BORDE),
-        border_radius=20,
-    )
+        content=ft.Row([
+            logo,
+            ft.Column([
+                ft.Text(u["username"], size=20,
+                        weight=ft.FontWeight.BOLD,
+                        color=es.COLOR_TEXTO),
+                ft.Container(
+                    content=ft.Text(u["rol"].capitalize(), size=11,
+                                    color=es.COLOR_MARCA_NEGRO,
+                                    weight=ft.FontWeight.BOLD),
+                    bgcolor=es.COLOR_ACENTO,
+                    padding=ft.Padding.symmetric(horizontal=10, vertical=3),
+                    border_radius=20),
+            ], spacing=6, expand=True),
+        ], spacing=14, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        padding=20, bgcolor=es.COLOR_SUPERFICIE,
+        border=ft.Border.all(1, es.COLOR_BORDE), border_radius=20)
 
-    subtitulo_usd = _subtitulo_tasa("tasa_usd", "USD")
-    subtitulo_eur = _subtitulo_tasa("tasa_eur", "EUR")
+    sub_usd = _subtitulo_tasa("tasa_usd", "USD")
+    sub_eur = _subtitulo_tasa("tasa_eur", "EUR")
+    sub_mon = f"Ver precios en {inv.get_moneda_visualizacion()}"
 
     bloques = [
         header,
@@ -253,19 +190,16 @@ def vista_perfil(app):
               color=es.COLOR_INFO),
         ft.Container(height=16),
         _seccion_label("Configuración"),
-        _tile_switch(
-            ft.Icons.DARK_MODE, "Modo oscuro",
-            "Alternar entre tema claro y oscuro",
-            es.es_oscuro(), toggle_tema,
-            color="#8b5cf6"),
+        _tile_switch(ft.Icons.DARK_MODE, "Modo oscuro",
+                     "Alternar entre tema claro y oscuro",
+                     es.es_oscuro(), toggle_tema, color="#8b5cf6"),
+        _tile(ft.Icons.VISIBILITY, "Moneda de visualización",
+              sub_mon, configurar_moneda_visualizacion,
+              color=es.COLOR_INFO),
         _tile(ft.Icons.ATTACH_MONEY, "Tasa de cambio USD",
-              subtitulo_usd,
-              configurar_tasa_usd,
-              color=es.COLOR_AMBAR),
+              sub_usd, configurar_tasa_usd, color=es.COLOR_AMBAR),
         _tile(ft.Icons.EURO_SYMBOL, "Tasa de cambio EUR",
-              subtitulo_eur,
-              configurar_tasa_eur,
-              color=es.COLOR_AMBAR),
+              sub_eur, configurar_tasa_eur, color=es.COLOR_AMBAR),
     ]
 
     if u["rol"] in ("admin", "almacen"):
@@ -273,8 +207,7 @@ def vista_perfil(app):
             ft.Container(height=8),
             _tile(ft.Icons.TUNE, "Umbrales de colores",
                   "Ajustar límites verde/amarillo por producto",
-                  abrir_umbrales,
-                  color=es.COLOR_AMBAR),
+                  abrir_umbrales, color=es.COLOR_AMBAR),
         ]
 
     if u["rol"] == "admin":
@@ -283,31 +216,25 @@ def vista_perfil(app):
             _seccion_label("Administración"),
             _tile(ft.Icons.STOREFRONT, "Administrar locales",
                   "Abrir, renombrar o cerrar tiendas",
-                  abrir_locales,
-                  color=es.COLOR_ACENTO),
+                  abrir_locales, color=es.COLOR_ACENTO),
             _tile(ft.Icons.PEOPLE, "Gestionar usuarios",
                   "Crear, editar o eliminar usuarios",
-                  abrir_usuarios,
-                  color=es.COLOR_PELIGRO),
+                  abrir_usuarios, color=es.COLOR_PELIGRO),
         ]
 
     if u["rol"] in ("admin", "almacen"):
         bloques += [
             ft.Container(height=16),
             _seccion_label("Datos"),
-            # 1. Excel
             _tile(ft.Icons.TABLE_CHART, "Exportar Excel",
                   "Genera el libro completo con todos los locales",
                   cb_exportar_excel, color=es.COLOR_EXITO),
-            # 2. Importar
             _tile(ft.Icons.UPLOAD, "Importar copia de seguridad",
                   "Reemplaza la BD actual con un archivo .db",
                   cb_importar_backup, color=es.COLOR_AMBAR),
-            # 3. Backup Destino
             _tile(ft.Icons.FOLDER_OPEN, "Backup Destino",
                   "Elige carpeta destino de backup",
                   cb_backup_destino, color=es.COLOR_INFO),
-            # 4. Backup Interno
             _tile(ft.Icons.SAVE, "Backup Interno",
                   "Backup en la carpeta destino",
                   cb_backup_interno, color=es.COLOR_ACENTO),
@@ -316,62 +243,38 @@ def vista_perfil(app):
     bloques += [
         ft.Container(height=24),
         ft.OutlinedButton(
-            "Cerrar sesión",
-            icon=ft.Icons.LOGOUT,
-            on_click=cerrar_sesion,
-            width=10000, height=48,
+            "Cerrar sesión", icon=ft.Icons.LOGOUT,
+            on_click=cerrar_sesion, width=10000, height=48,
             style=ft.ButtonStyle(
                 color=es.COLOR_PELIGRO,
                 side=ft.BorderSide(1, es.COLOR_PELIGRO),
                 shape=ft.RoundedRectangleBorder(
-                    radius=ft.BorderRadius.all(12)),
-            ),
-        ),
+                    radius=ft.BorderRadius.all(12)))),
         ft.Container(height=24),
     ]
 
     contenido = ft.Container(
-        content=ft.Column(
-            controls=bloques,
-            spacing=8,
-            scroll=ft.ScrollMode.AUTO,
-            expand=True,
-        ),
-        padding=ft.Padding.all(16),
-        expand=True,
-    )
+        content=ft.Column(controls=bloques, spacing=8,
+                          scroll=ft.ScrollMode.AUTO, expand=True),
+        padding=ft.Padding.all(16), expand=True)
 
     return ft.View(
-        route="/perfil",
-        controls=[contenido],
+        route="/perfil", controls=[contenido],
         appbar=ft.AppBar(
-            title=ft.Text("Mi perfil", size=16,
-                          color=es.COLOR_TEXTO),
-            bgcolor=es.COLOR_SUPERFICIE,
-            elevation=0,
-        ),
+            title=ft.Text("Mi perfil", size=16, color=es.COLOR_TEXTO),
+            bgcolor=es.COLOR_SUPERFICIE, elevation=0),
         navigation_bar=barra_navegacion(app, 3),
-        bgcolor=es.COLOR_FONDO,
-    )
+        bgcolor=es.COLOR_FONDO)
 
 
-# ============================================================
-# Diálogo de tasa
-# ============================================================
+# ============ Diálogo de tasa ============
 
-def _dlg_tasa(app, clave: str, titulo: str,
-              label: str, moneda: str):
+def _dlg_tasa(app, clave, titulo, label, moneda):
     page = app.page
-
-    actual_raw = inv.get_config(clave) or "1"
-    actual = _fmt_num(actual_raw)
-
-    tf = ft.TextField(
-        label=label,
-        value=actual,
-        keyboard_type=ft.KeyboardType.NUMBER,
-        **es.estilo_textfield(12), height=54,
-    )
+    actual = _fmt_num(inv.get_config(clave) or "1")
+    tf = ft.TextField(label=label, value=actual,
+                      keyboard_type=ft.KeyboardType.NUMBER,
+                      **es.estilo_textfield(12), height=54)
     error_lbl = ft.Text("", color=es.COLOR_PELIGRO, size=12)
     dlg_ref = {"dlg": None}
 
@@ -388,8 +291,13 @@ def _dlg_tasa(app, clave: str, titulo: str,
 
         inv.set_config(clave, str(valor))
 
+        # FASE 2: recalcular TODOS los precios en USD/EUR
+        n = inv.recalcular_todos_los_precios()
+
         def _despues():
-            snack(page, f"1 {moneda} = {_fmt_num(valor)} CUP", "ok")
+            snack(page,
+                  f"1 {moneda} = {_fmt_num(valor)} CUP. "
+                  f"{n} producto(s) actualizados.", "ok")
             app.refrescar()
 
         cerrar_dialogo(page, dlg_ref["dlg"], on_close=_despues)
@@ -400,51 +308,88 @@ def _dlg_tasa(app, clave: str, titulo: str,
     dlg = ft.AlertDialog(
         title=ft.Text(titulo),
         content=ft.Column([
-            ft.Text("Se usará para convertir los precios al "
-                    "guardarlos en CUP.",
+            ft.Text("Al guardar, se recalcularán TODOS los precios "
+                    "en USD/EUR de los productos con la nueva tasa. "
+                    "Los productos en CUP no se modifican.",
                     size=12, color=es.COLOR_TEXTO_SUAVE),
             ft.Container(height=8),
-            tf,
-            error_lbl,
+            tf, error_lbl,
         ], tight=True, width=320, spacing=8),
         actions=[
             ft.TextButton("Cancelar", on_click=cancelar),
             ft.FilledButton("Guardar", on_click=guardar,
                             style=es.estilo_boton_marca()),
         ],
-        actions_alignment=ft.MainAxisAlignment.END,
-    )
+        actions_alignment=ft.MainAxisAlignment.END)
     dlg_ref["dlg"] = dlg
     page.show_dialog(dlg)
 
 
-# ============================================================
-# Editar perfil
-# ============================================================
+# ============ Diálogo de moneda visualización ============
+
+def _dlg_moneda_visualizacion(app):
+    page = app.page
+    actual = inv.get_moneda_visualizacion()
+    dd = ft.Dropdown(
+        label="Ver precios en",
+        value=actual,
+        options=[
+            ft.DropdownOption(key="CUP", text="$  CUP"),
+            ft.DropdownOption(key="USD", text="USD$  USD"),
+            ft.DropdownOption(key="EUR", text="€  EUR"),
+        ],
+        **es.borde_textfield(12))
+    dlg_ref = {"dlg": None}
+
+    def guardar(e):
+        inv.set_moneda_visualizacion(dd.value or "CUP")
+
+        def _despues():
+            snack(page, f"Moneda cambiada a {dd.value}", "ok")
+            app.refrescar()
+
+        cerrar_dialogo(page, dlg_ref["dlg"], on_close=_despues)
+
+    def cancelar(e):
+        cerrar_dialogo(page, dlg_ref["dlg"])
+
+    dlg = ft.AlertDialog(
+        title=ft.Text("Moneda de visualización"),
+        content=ft.Column([
+            ft.Text("Se usará para mostrar los totales y el margen "
+                    "del dashboard.", size=12,
+                    color=es.COLOR_TEXTO_SUAVE),
+            ft.Container(height=8),
+            dd,
+        ], tight=True, width=300, spacing=8),
+        actions=[
+            ft.TextButton("Cancelar", on_click=cancelar),
+            ft.FilledButton("Guardar", on_click=guardar,
+                            style=es.estilo_boton_marca()),
+        ],
+        actions_alignment=ft.MainAxisAlignment.END)
+    dlg_ref["dlg"] = dlg
+    page.show_dialog(dlg)
+
+
+# ============ Editar perfil ============
 
 def _modal_editar_perfil(app):
     page = app.page
     import usuarios as um
 
-    tf_u = ft.TextField(
-        label="Usuario", value=app.usuario["username"],
-        **es.estilo_textfield(12), height=54,
-    )
-    tf_a = ft.TextField(
-        label="Contraseña actual", password=True,
-        can_reveal_password=True,
-        **es.estilo_textfield(12), height=54,
-    )
-    tf_n = ft.TextField(
-        label="Nueva contraseña (opcional)", password=True,
-        can_reveal_password=True,
-        **es.estilo_textfield(12), height=54,
-    )
-    tf_n2 = ft.TextField(
-        label="Repetir nueva", password=True,
-        can_reveal_password=True,
-        **es.estilo_textfield(12), height=54,
-    )
+    tf_u = ft.TextField(label="Usuario",
+                        value=app.usuario["username"],
+                        **es.estilo_textfield(12), height=54)
+    tf_a = ft.TextField(label="Contraseña actual", password=True,
+                        can_reveal_password=True,
+                        **es.estilo_textfield(12), height=54)
+    tf_n = ft.TextField(label="Nueva contraseña (opcional)",
+                        password=True, can_reveal_password=True,
+                        **es.estilo_textfield(12), height=54)
+    tf_n2 = ft.TextField(label="Repetir nueva", password=True,
+                         can_reveal_password=True,
+                         **es.estilo_textfield(12), height=54)
     error_lbl = ft.Text("", color=es.COLOR_PELIGRO, size=12)
     dlg_ref = {"dlg": None}
 
@@ -479,16 +424,14 @@ def _modal_editar_perfil(app):
 
     dlg = ft.AlertDialog(
         title=ft.Text("Editar perfil"),
-        content=ft.Column(
-            [tf_u, tf_a, tf_n, tf_n2, error_lbl],
-            tight=True, width=320, spacing=10,
-            scroll=ft.ScrollMode.AUTO),
+        content=ft.Column([tf_u, tf_a, tf_n, tf_n2, error_lbl],
+                        tight=True, width=320, spacing=10,
+                        scroll=ft.ScrollMode.AUTO),
         actions=[
             ft.TextButton("Cancelar", on_click=cancelar),
             ft.FilledButton("Guardar", on_click=guardar,
                             style=es.estilo_boton_marca()),
         ],
-        actions_alignment=ft.MainAxisAlignment.END,
-    )
+        actions_alignment=ft.MainAxisAlignment.END)
     dlg_ref["dlg"] = dlg
     page.show_dialog(dlg)

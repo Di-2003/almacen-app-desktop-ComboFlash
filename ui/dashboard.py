@@ -1,7 +1,5 @@
 """
-Dashboard con métricas del local actual.
-4 tarjetas clicables por color + dinero + actividad + movimientos
-por concepto + top 5 + últimos.
+Dashboard con métricas del local. Incluye margen en CUP y USD.
 """
 from datetime import datetime, timedelta
 import flet as ft
@@ -9,29 +7,22 @@ from db import get_conn, GENERAL_ID
 import inventario as inv
 import locales as loc
 from ui import estilos as es
-from ui.componentes import (
-    tarjeta_metrica, empty_state, mounted,
-    chip_estado,
-)
+from ui.componentes import tarjeta_metrica, empty_state, mounted
 from ui.principal import barra_navegacion
 
 
 def _seccion(titulo):
-    return ft.Row(
-        [
-            ft.Container(width=4, height=18,
-                        bgcolor=es.COLOR_ACENTO, border_radius=2),
-            ft.Text(titulo, size=14, weight=ft.FontWeight.BOLD,
-                    color=es.COLOR_TEXTO),
-        ],
-        spacing=8,
-    )
+    return ft.Row([
+        ft.Container(width=4, height=18, bgcolor=es.COLOR_ACENTO,
+                     border_radius=2),
+        ft.Text(titulo, size=14, weight=ft.FontWeight.BOLD,
+                color=es.COLOR_TEXTO),
+    ], spacing=8)
 
 
 def _card(control):
     return ft.Container(
-        content=control,
-        padding=16,
+        content=control, padding=16,
         bgcolor=es.COLOR_SUPERFICIE,
         border=ft.Border.all(1, es.COLOR_BORDE),
         border_radius=16,
@@ -39,7 +30,6 @@ def _card(control):
 
 
 def vista_dashboard(app):
-    page = app.page
     sp = _stats_productos(app.local_id)
     t = inv.totales_local(app.local_id)
     sm = _stats_movimientos(app.local_id)
@@ -54,8 +44,7 @@ def vista_dashboard(app):
 
     grid1 = ft.Row([
         ft.Container(content=tarjeta_metrica(
-            "Activos", str(sp["total"]),
-            f"{sp['stock_cero']} sin stock",
+            "Activos", str(sp["total"]), f"{sp['stock_cero']} sin stock",
             color=es.COLOR_TEXTO_SUAVE,
             on_tap=abrir_lista("todos")), expand=True),
         ft.Container(content=tarjeta_metrica(
@@ -80,30 +69,33 @@ def vista_dashboard(app):
             on_tap=abrir_lista("rojo")), expand=True),
     ], spacing=10)
 
-    # Dinero
     invertido = t["invertido"]
     venta = t["venta_total"]
     margen = t["diferencia"]
     pct = (margen / invertido * 100) if invertido > 0 else 0.0
+    acento_pct = (es.COLOR_VERDE if pct >= 30
+                  else es.COLOR_AMARILLO if pct >= 15
+                  else es.COLOR_ROJO)
 
-    if pct >= 30:
-        acento_pct = es.COLOR_VERDE
-    elif pct >= 15:
-        acento_pct = es.COLOR_AMARILLO
-    else:
-        acento_pct = es.COLOR_ROJO
+    # Conversión a USD usando la tasa actual
+    tasa_usd = inv.get_tasa_usd()
+    def usd(cup):
+        return (cup / tasa_usd) if tasa_usd > 0 else 0.0
 
     dinero = ft.Row([
         ft.Container(content=tarjeta_metrica(
-            "Invertido", f"${invertido:,.2f}", "costo total",
+            "Invertido", f"${invertido:,.2f}",
+            f"≈ USD$ {usd(invertido):,.2f}",
             color=es.COLOR_TEXTO_SUAVE), expand=True),
         ft.Container(content=tarjeta_metrica(
-            "Venta", f"${venta:,.2f}", "si se vende todo",
+            "Venta", f"${venta:,.2f}",
+            f"≈ USD$ {usd(venta):,.2f}",
             color=es.COLOR_ACENTO), expand=True),
     ], spacing=10)
     dinero2 = ft.Row([
         ft.Container(content=tarjeta_metrica(
-            "Margen", f"${margen:,.2f}", "venta − costo",
+            "Margen", f"${margen:,.2f}",
+            f"≈ USD$ {usd(margen):,.2f}",
             color=es.COLOR_ACENTO), expand=True),
         ft.Container(content=tarjeta_metrica(
             "% Ganancia", f"{pct:.1f}%",
@@ -111,7 +103,6 @@ def vista_dashboard(app):
             color=acento_pct), expand=True),
     ], spacing=10)
 
-    # Actividad
     act = ft.Row([
         ft.Container(content=tarjeta_metrica(
             "Hoy", str(sm["hoy"]), "movs",
@@ -129,19 +120,18 @@ def vista_dashboard(app):
             color=es.COLOR_ACENTO), expand=True),
     ], spacing=10)
 
-    # Movimientos por concepto
-    concepto1 = ft.Row([
+    conc1 = ft.Row([
         ft.Container(content=tarjeta_metrica(
             "Ventas", str(tc["ventas"]["n"]),
             f"${tc['ventas']['monto']:,.2f} · "
-            f"{inv.fmt_cantidad(tc['ventas']['cantidad'])} u",
+            f"≈ USD$ {usd(tc['ventas']['monto']):,.2f}",
             color=es.COLOR_EXITO), expand=True),
         ft.Container(content=tarjeta_metrica(
             "Entradas", str(tc["entradas"]["n"]),
             f"{inv.fmt_cantidad(tc['entradas']['cantidad'])} u",
             color=es.COLOR_INFO), expand=True),
     ], spacing=10)
-    concepto2 = ft.Row([
+    conc2 = ft.Row([
         ft.Container(content=tarjeta_metrica(
             "Otras salidas", str(tc["otras_salidas"]["n"]),
             f"{inv.fmt_cantidad(tc['otras_salidas']['cantidad'])} u",
@@ -152,7 +142,6 @@ def vista_dashboard(app):
             color=es.COLOR_PELIGRO), expand=True),
     ], spacing=10)
 
-    # Top
     if top:
         medallas = ["🥇", "🥈", "🥉", "4.", "5."]
         max_m = max(d["n"] for d in top) or 1
@@ -161,8 +150,7 @@ def vista_dashboard(app):
             frac = d["n"] / max_m
             filas.append(ft.Column([
                 ft.Row([
-                    ft.Text(medallas[i] if i < 3 else f"{i+1}.",
-                            size=14),
+                    ft.Text(medallas[i] if i < 3 else f"{i+1}.", size=14),
                     ft.Text(d["producto"], size=13, expand=True,
                             max_lines=1,
                             overflow=ft.TextOverflow.ELLIPSIS,
@@ -173,21 +161,16 @@ def vista_dashboard(app):
                 ], spacing=8),
                 ft.Container(
                     content=ft.Container(
-                        width=int(frac * 260),
-                        height=4, bgcolor=es.COLOR_ACENTO,
-                        border_radius=2,
-                    ),
+                        width=int(frac * 260), height=4,
+                        bgcolor=es.COLOR_ACENTO, border_radius=2),
                     bgcolor=es.COLOR_ACENTO_SUAVE,
-                    border_radius=2, height=4,
-                ),
+                    border_radius=2, height=4),
             ], spacing=6))
         contenido_top = ft.Column(filas, spacing=12)
     else:
-        contenido_top = empty_state(
-            ft.Icons.BAR_CHART, "Sin datos",
-            "Aún no hay movimientos en los últimos 30 días.")
+        contenido_top = empty_state(ft.Icons.BAR_CHART, "Sin datos",
+                                     "Sin movimientos en 30 días.")
 
-    # Últimos
     if ultimos:
         filas_ult = []
         for d in ultimos:
@@ -196,8 +179,7 @@ def vista_dashboard(app):
                 content=ft.Row([
                     ft.Container(
                         content=ft.Icon(ic, color="white", size=16),
-                        bgcolor=c, padding=8, border_radius=10,
-                    ),
+                        bgcolor=c, padding=8, border_radius=10),
                     ft.Column([
                         ft.Text(d["producto"], size=13,
                                 weight=ft.FontWeight.W_600,
@@ -214,40 +196,33 @@ def vista_dashboard(app):
                     vertical_alignment=ft.CrossAxisAlignment.CENTER),
                 padding=ft.Padding.symmetric(horizontal=12, vertical=10),
                 bgcolor=es.COLOR_SUPERFICIE_2,
-                border_radius=10,
-            ))
+                border_radius=10))
         contenido_ult = ft.Column(filas_ult, spacing=8)
     else:
-        contenido_ult = empty_state(
-            ft.Icons.HISTORY, "Sin movimientos",
-            "Los movimientos aparecerán aquí.")
+        contenido_ult = empty_state(ft.Icons.HISTORY, "Sin movimientos",
+                                     "Los movimientos aparecerán aquí.")
 
     contenido = ft.Container(
-        content=ft.Column(
-            controls=[
-                _seccion("Estado del inventario"),
-                grid1, grid2, grid3,
-                ft.Container(height=12),
-                _seccion("Dinero"),
-                dinero, dinero2,
-                ft.Container(height=12),
-                _seccion("Actividad"),
-                act, act2,
-                ft.Container(height=12),
-                _seccion("Movimientos por concepto"),
-                concepto1, concepto2,
-                ft.Container(height=12),
-                _seccion("Top 5 (30 días)"),
-                _card(contenido_top),
-                ft.Container(height=12),
-                _seccion("Últimos movimientos"),
-                contenido_ult,
-                ft.Container(height=30),
-            ],
-            spacing=10,
-            scroll=ft.ScrollMode.AUTO,
-            expand=True,
-        ),
+        content=ft.Column(controls=[
+            _seccion("Estado del inventario"),
+            grid1, grid2, grid3,
+            ft.Container(height=12),
+            _seccion("Dinero"),
+            dinero, dinero2,
+            ft.Container(height=12),
+            _seccion("Actividad"),
+            act, act2,
+            ft.Container(height=12),
+            _seccion("Movimientos por concepto"),
+            conc1, conc2,
+            ft.Container(height=12),
+            _seccion("Top 5 (30 días)"),
+            _card(contenido_top),
+            ft.Container(height=12),
+            _seccion("Últimos movimientos"),
+            contenido_ult,
+            ft.Container(height=30),
+        ], spacing=10, scroll=ft.ScrollMode.AUTO, expand=True),
         padding=ft.Padding.all(14),
         expand=True,
     )
@@ -259,25 +234,21 @@ def vista_dashboard(app):
             title=ft.Text(
                 f"Métricas — {loc.nombre_local(app.local_id)}",
                 size=15, color=es.COLOR_TEXTO),
-            bgcolor=es.COLOR_SUPERFICIE,
-            elevation=0,
-        ),
+            bgcolor=es.COLOR_SUPERFICIE, elevation=0),
         navigation_bar=barra_navegacion(app, 1),
         bgcolor=es.COLOR_FONDO,
     )
 
 
-# ============ helpers ============
-
 def _color_tipo(tipo):
     m = {
         "ENTRADA": (es.COLOR_EXITO, ft.Icons.ADD_CIRCLE),
-        "SALIDA":  (es.COLOR_PELIGRO, ft.Icons.REMOVE_CIRCLE),
-        "BAJA":    (es.COLOR_TEXTO_SUAVE, ft.Icons.DELETE_OUTLINE),
+        "SALIDA": (es.COLOR_PELIGRO, ft.Icons.REMOVE_CIRCLE),
+        "BAJA": (es.COLOR_TEXTO_SUAVE, ft.Icons.DELETE_OUTLINE),
         "TRASPASO_SALIDA": (es.COLOR_INFO, ft.Icons.LOGOUT),
         "TRASPASO_ENTRADA": (es.COLOR_INFO, ft.Icons.LOGIN),
-        "AJUSTE":  (es.COLOR_AMBAR, ft.Icons.ATTACH_MONEY),
-        "UMBRAL":  (es.COLOR_AMBAR, ft.Icons.TUNE),
+        "AJUSTE": (es.COLOR_AMBAR, ft.Icons.ATTACH_MONEY),
+        "UMBRAL": (es.COLOR_AMBAR, ft.Icons.TUNE),
     }
     return m.get(tipo, (es.COLOR_TEXTO_SUAVE, ft.Icons.CIRCLE))
 
@@ -306,13 +277,11 @@ def _stats_movimientos(local_id):
     hoy = ahora.strftime("%Y-%m-%d 00:00:00")
     h7 = (ahora - timedelta(days=7)).strftime("%Y-%m-%d 00:00:00")
     h30 = (ahora - timedelta(days=30)).strftime("%Y-%m-%d 00:00:00")
-
-    filtro_local = ""
-    params_base: list = []
+    filtro = ""
+    params_base = []
     if local_id != GENERAL_ID:
-        filtro_local = " AND local_id=?"
+        filtro = " AND local_id=?"
         params_base = [local_id]
-
     with get_conn() as conn:
         def c(desde=None):
             sql = ("SELECT COUNT(*) AS n FROM movimientos "
@@ -321,17 +290,15 @@ def _stats_movimientos(local_id):
             if desde:
                 sql += " AND fecha >= ?"
                 params.append(desde)
-            sql += filtro_local
+            sql += filtro
             return conn.execute(sql, tuple(params)).fetchone()["n"]
-        return {"hoy": c(hoy), "semana": c(h7),
-                "mes": c(h30), "total": c()}
+        return {"hoy": c(hoy), "semana": c(h7), "mes": c(h30), "total": c()}
 
 
 def _top_productos(local_id):
-    h30 = (datetime.now() - timedelta(days=30)) \
-        .strftime("%Y-%m-%d 00:00:00")
+    h30 = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d 00:00:00")
     filtro = ""
-    params: list = [h30]
+    params = [h30]
     if local_id != GENERAL_ID:
         filtro = " AND m.local_id=?"
         params.append(local_id)
@@ -348,7 +315,7 @@ def _top_productos(local_id):
 
 def _ultimos_movimientos(local_id, n):
     filtro = ""
-    params: list = []
+    params = []
     if local_id != GENERAL_ID:
         filtro = " AND m.local_id=?"
         params.append(local_id)
@@ -359,7 +326,7 @@ def _ultimos_movimientos(local_id, n):
             "m.cantidad, m.motivo, m.usuario "
             "FROM movimientos m JOIN productos p ON p.id=m.producto_id "
             "WHERE m.tipo IN ('ENTRADA','SALIDA','BAJA',"
-            "                 'TRASPASO_SALIDA','TRASPASO_ENTRADA') "
+            "                 'TRASPASO_SALIDA','TRASPASO_ENTRADA')"
             + filtro +
             " ORDER BY m.fecha DESC, m.id DESC LIMIT ?",
             tuple(params)).fetchall()
@@ -385,63 +352,39 @@ def _abrir_lista_productos(app, filtro):
         titulo = "En crítico"
     else:
         return
-
-    lst = ft.Column(
-        spacing=8,
-        scroll=ft.ScrollMode.AUTO,
-        expand=True,
-    )
-
+    lst = ft.Column(spacing=8, scroll=ft.ScrollMode.AUTO, expand=True)
     if productos:
         for p in productos:
+            mc = p.get("moneda_costo") or "CUP"
             lst.controls.append(ft.Container(
                 content=ft.Column([
                     ft.Text(p["nombre"], size=14,
                             weight=ft.FontWeight.W_600,
-                            color=es.COLOR_TEXTO,
-                            max_lines=2,
+                            color=es.COLOR_TEXTO, max_lines=2,
                             overflow=ft.TextOverflow.ELLIPSIS),
                     ft.Container(height=4),
                     ft.Row([
-                        ft.Text(p.get("codigo") or "—",
-                                size=11,
+                        ft.Text(p.get("codigo") or "—", size=11,
                                 color=es.COLOR_ACENTO,
                                 weight=ft.FontWeight.W_600),
-                        ft.Text("·", size=11,
-                                color=es.COLOR_TEXTO_TENUE),
-                        ft.Text(
-                            f"Stock {inv.fmt_cantidad(p['stock'])}",
-                            size=11,
-                            color=es.COLOR_TEXTO_SUAVE),
+                        ft.Text("·", size=11, color=es.COLOR_TEXTO_TENUE),
+                        ft.Text(f"Stock {inv.fmt_cantidad(p['stock'])}",
+                                size=11, color=es.COLOR_TEXTO_SUAVE),
+                        ft.Text("·", size=11, color=es.COLOR_TEXTO_TENUE),
+                        ft.Text(mc, size=11, color=es.COLOR_TEXTO_TENUE),
                     ], spacing=6, tight=True),
                 ], spacing=0),
-                padding=12,
-                bgcolor=es.COLOR_SUPERFICIE_2,
-                border_radius=10,
-            ))
+                padding=12, bgcolor=es.COLOR_SUPERFICIE_2,
+                border_radius=10))
     else:
-        lst.controls.append(empty_state(
-            ft.Icons.INBOX_OUTLINED,
-            "Nada por aquí",
-            "No hay productos en este filtro."))
-
-    dlg = ft.AlertDialog(
+        lst.controls.append(empty_state(ft.Icons.INBOX_OUTLINED,
+                                          "Nada por aquí",
+                                          "No hay productos."))
+    page.show_dialog(ft.AlertDialog(
         title=ft.Text(f"{titulo}  ({len(productos)})",
                       size=16, color=es.COLOR_TEXTO),
-        content=ft.Container(
-            content=lst,
-            width=340,
-            height=None,
-            expand=True,
-        ),
-        actions=[
-            ft.TextButton("Cerrar",
-                          on_click=lambda e: page.pop_dialog()),
-        ],
+        content=ft.Container(content=lst, width=340, expand=True),
+        actions=[ft.TextButton("Cerrar",
+                                on_click=lambda e: page.pop_dialog())],
         actions_alignment=ft.MainAxisAlignment.END,
-    )
-    page.show_dialog(dlg)
-
-
-def abrir_dashboard(app):
-    app.ir("/dashboard")
+    ))

@@ -1,30 +1,38 @@
 """
-Esquema de la base de datos SQLite v6 (multi-local).
+Esquema de la base de datos SQLite v7 (multi-local + multimoneda).
 
 Tablas:
   - meta           → metadatos del sistema (versión del esquema)
   - locales        → Almacén + tiendas
   - usuarios       → quién puede usar la app y con qué rol
-  - configuracion  → valores por defecto (umbrales, tema, etc.)
-  - productos      → inventario por local (nombre único por local,
-                     código único por local)
+  - configuracion  → valores por defecto (umbrales, tema, tasas)
+  - productos      → inventario por local, con moneda original
   - movimientos    → historial completo multi-local
 
-'General' es una vista virtual (GENERAL_ID = -1), no se guarda en
-`locales`.
+'General' es una vista virtual (GENERAL_ID = -1).
 
 Tipos de movimiento:
   ENTRADA, SALIDA, BAJA, RESTAURACION,
   TRASPASO_SALIDA, TRASPASO_ENTRADA, UMBRAL, AJUSTE
 
-ZONA HORARIA: hora local del dispositivo (sin TZ).
+MONEDA:
+  Cada producto tiene `moneda_costo` y `moneda_venta` (CUP/USD/EUR).
+  - `precio_costo_orig` y `precio_unitario_orig` guardan el valor
+    en su moneda original.
+  - `precio_costo` y `precio_unitario` guardan el valor en CUP
+    (calculado con la tasa actual). Se recalculan cuando cambia la
+    tasa desde Perfil.
+
+ZONA HORARIA: hora local del dispositivo.
 """
 import sqlite3
 from datetime import datetime
 from rutas import DB_PATH
 
-VERSION_ESQUEMA = 6
+VERSION_ESQUEMA = 7
 GENERAL_ID = -1
+
+MONEDAS_VALIDAS = ("CUP", "USD", "EUR")
 
 
 SCHEMA = """
@@ -59,17 +67,25 @@ CREATE TABLE IF NOT EXISTS configuracion (
 );
 
 CREATE TABLE IF NOT EXISTS productos (
-    id               INTEGER PRIMARY KEY AUTOINCREMENT,
-    local_id         INTEGER NOT NULL,
-    codigo           TEXT COLLATE NOCASE,
-    nombre           TEXT NOT NULL COLLATE NOCASE,
-    stock            REAL NOT NULL DEFAULT 0,
-    umbral_verde     INTEGER NOT NULL DEFAULT 50,
-    umbral_amarillo  INTEGER NOT NULL DEFAULT 20,
-    precio_costo     REAL NOT NULL DEFAULT 0,
-    precio_unitario  REAL NOT NULL DEFAULT 0,
-    fecha_ultima_mod TEXT NOT NULL,
-    activo           INTEGER NOT NULL DEFAULT 1,
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    local_id              INTEGER NOT NULL,
+    codigo                TEXT COLLATE NOCASE,
+    nombre                TEXT NOT NULL COLLATE NOCASE,
+    stock                 REAL NOT NULL DEFAULT 0,
+    umbral_verde          INTEGER NOT NULL DEFAULT 50,
+    umbral_amarillo       INTEGER NOT NULL DEFAULT 20,
+    -- Valores en CUP (los que usa la app para cálculos y totales)
+    precio_costo          REAL NOT NULL DEFAULT 0,
+    precio_unitario       REAL NOT NULL DEFAULT 0,
+    -- Valores en su moneda original
+    precio_costo_orig     REAL NOT NULL DEFAULT 0,
+    precio_unitario_orig  REAL NOT NULL DEFAULT 0,
+    moneda_costo          TEXT NOT NULL DEFAULT 'CUP'
+                          CHECK(moneda_costo IN ('CUP','USD','EUR')),
+    moneda_venta          TEXT NOT NULL DEFAULT 'CUP'
+                          CHECK(moneda_venta IN ('CUP','USD','EUR')),
+    fecha_ultima_mod      TEXT NOT NULL,
+    activo                INTEGER NOT NULL DEFAULT 1,
     FOREIGN KEY(local_id) REFERENCES locales(id)
 );
 
@@ -117,16 +133,11 @@ def get_conn() -> sqlite3.Connection:
 
 
 def inicializar_db() -> None:
-    """
-    Crea el esquema si no existe. Si detecta una versión anterior,
-    borra todo y arranca de cero. Asegura que exista 'Almacén'.
-    """
     conn = get_conn()
     try:
         with conn:
             if _es_esquema_antiguo(conn):
                 _dropear_todo(conn)
-
             conn.executescript(SCHEMA)
             _asegurar_defaults(conn)
             _asegurar_almacen(conn)
@@ -144,14 +155,7 @@ def _es_esquema_antiguo(conn) -> bool:
             return False
         return int(row["valor"]) < VERSION_ESQUEMA
     except sqlite3.OperationalError:
-        try:
-            cols = conn.execute("PRAGMA table_info(productos)").fetchall()
-            nombres = {c["name"] for c in cols}
-            return bool(nombres) and (
-                "local_id" not in nombres or "codigo" not in nombres
-            )
-        except sqlite3.OperationalError:
-            return False
+        return False
 
 
 def _dropear_todo(conn) -> None:
@@ -167,7 +171,8 @@ def _asegurar_defaults(conn) -> None:
         "motivo_default_salida":   "Venta",
         "tema":                    "oscuro",
         "tasa_usd":                "1.0",
-        "tasa_eur":                "1.0",   # <-- NUEVO
+        "tasa_eur":                "1.0",
+        "moneda_visualizacion":    "CUP",
     }.items():
         conn.execute(
             "INSERT OR IGNORE INTO configuracion(clave,valor) VALUES(?,?)",
