@@ -1,11 +1,13 @@
 """
-Diálogos. Incluye moneda original, promedio ponderado y moneda
-de visualización.
+Diálogos. Incluye moneda original, promedio ponderado, categoría.
+Autocompletado cruzado nombre↔código en entrada, salida y traspaso.
+Creación de categoría INLINE (sin diálogo anidado, que Flet no permite).
 """
 from datetime import datetime
 import flet as ft
 import inventario as inv
 import locales as loc
+import categorias as cats
 from db import GENERAL_ID
 from ui import estilos as es
 from ui.componentes import (
@@ -35,6 +37,13 @@ def _ahora_str():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _opciones_categorias():
+    ops = [ft.DropdownOption(key="", text="Sin categoría")]
+    for c in cats.listar_categorias(solo_activas=True):
+        ops.append(ft.DropdownOption(key=str(c["id"]), text=c["nombre"]))
+    return ops
+
+
 # ============ detalle de producto ============
 
 def abrir_detalle_producto(app, prod, on_refresh=None):
@@ -52,6 +61,12 @@ def abrir_detalle_producto(app, prod, on_refresh=None):
     es_general = app.es_general() or prod.get("id") is None
     esta_activo = prod.get("activo", 1) == 1
 
+    cat_nombre = "Sin categoría"
+    if prod.get("categoria_id"):
+        c = cats.obtener_categoria(prod["categoria_id"])
+        if c:
+            cat_nombre = c["nombre"]
+
     cabecera = ft.Row([
         ft.Column([
             ft.Text(prod["nombre"], size=17, weight=ft.FontWeight.BOLD,
@@ -59,6 +74,7 @@ def abrir_detalle_producto(app, prod, on_refresh=None):
                     overflow=ft.TextOverflow.ELLIPSIS),
             ft.Text(prod.get("codigo") or "—", size=11,
                     color=es.COLOR_TEXTO_SUAVE),
+            ft.Text(cat_nombre, size=11, color=es.COLOR_ACENTO),
             ft.Text(prod.get("fecha_ultima_mod") or "", size=10,
                     color=es.COLOR_TEXTO_TENUE),
         ], spacing=1, expand=True),
@@ -151,6 +167,9 @@ def abrir_detalle_producto(app, prod, on_refresh=None):
         def umb(e):
             cerrar_dialogo(page)
             _dlg_umbrales(app, prod, on_refresh)
+        def cat(e):
+            cerrar_dialogo(page)
+            _dlg_categoria(app, prod, on_refresh)
         def baja(e):
             cerrar_dialogo(page)
             _conf_baja(app, prod, on_refresh)
@@ -169,8 +188,8 @@ def abrir_detalle_producto(app, prod, on_refresh=None):
             ], spacing=8),
             ft.Row([
                 _tile(ft.Icons.EDIT, es.COLOR_ACENTO, "Renombrar", ren),
+                _tile(ft.Icons.CATEGORY, es.COLOR_INFO, "Tipo", cat),
                 _tile(ft.Icons.TUNE, es.COLOR_AMBAR, "Umbrales", umb),
-                ft.Container(expand=True),
             ], spacing=8),
             ft.Container(height=2),
             ft.Container(
@@ -217,6 +236,154 @@ def _tile(icono, color_bg, label, on_click):
     )
 
 
+# ============ widget reutilizable: dropdown + crear inline ============
+
+def _construir_selector_categoria(cat_default_id, on_cambio):
+    """
+    Devuelve (dd, bloque_nueva, contenedor).
+      - dd: Dropdown de categoría (sin opción especial)
+      - bloque_nueva: Row con TextField + botón ✓ (oculto inicialmente)
+      - contenedor: Column con [dd, btn_nueva, bloque_nueva]
+    El botón "+ Nuevo tipo" muestra bloque_nueva.
+    Al guardar, crea la categoría, actualiza las opciones del dd y
+    selecciona la nueva.
+    """
+    cat_default = ""
+    if cat_default_id:
+        cat_default = str(cat_default_id)
+
+    dd = ft.Dropdown(
+        label="Tipo de producto",
+        value=cat_default,
+        options=_opciones_categorias(),
+        **es.borde_textfield(12),
+    )
+
+    tf_nueva = ft.TextField(
+        label="Nuevo tipo",
+        autofocus=False,
+        **es.estilo_textfield(12), height=52, expand=True,
+    )
+    sugerencia = ft.Text("", size=11, color=es.COLOR_ACENTO)
+    error_lbl = ft.Text("", size=11, color=es.COLOR_PELIGRO)
+
+    def on_nueva_change(e):
+        val = (tf_nueva.value or "").strip()
+        sugerencia.value = ""
+        error_lbl.value = ""
+        if val:
+            existente = cats.buscar_por_nombre(val)
+            if existente and existente["activo"]:
+                sugerencia.value = (f"«{existente['nombre']}» ya existe "
+                                    f"— se reutilizará")
+        try:
+            sugerencia.update()
+            error_lbl.update()
+        except Exception:
+            pass
+
+    tf_nueva.on_change = on_nueva_change
+
+    def confirmar(e):
+        error_lbl.value = ""
+        nombre = (tf_nueva.value or "").strip()
+        if not nombre:
+            error_lbl.value = "Escribe un nombre"
+            try:
+                error_lbl.update()
+            except Exception:
+                pass
+            return
+        if len(nombre) < 2:
+            error_lbl.value = "Mínimo 2 caracteres"
+            try:
+                error_lbl.update()
+            except Exception:
+                pass
+            return
+        try:
+            existente = cats.buscar_por_nombre(nombre)
+            if existente and existente["activo"]:
+                nuevo_id = existente["id"]
+            else:
+                nuevo_id = cats.crear_categoria(nombre)
+        except Exception as ex:
+            error_lbl.value = str(ex)
+            try:
+                error_lbl.update()
+            except Exception:
+                pass
+            return
+
+        # Actualizar dropdown con la nueva opción y seleccionarla
+        dd.options = _opciones_categorias()
+        dd.value = str(nuevo_id)
+        tf_nueva.value = ""
+        sugerencia.value = ""
+        error_lbl.value = ""
+        bloque_nueva.visible = False
+        btn_nueva.visible = True
+        try:
+            dd.update()
+            bloque_nueva.update()
+            btn_nueva.update()
+        except Exception:
+            pass
+
+    btn_ok = ft.IconButton(
+        ft.Icons.CHECK_CIRCLE,
+        icon_color=es.COLOR_EXITO,
+        tooltip="Crear y seleccionar",
+        on_click=confirmar,
+    )
+
+    def cancelar(e):
+        tf_nueva.value = ""
+        sugerencia.value = ""
+        error_lbl.value = ""
+        bloque_nueva.visible = False
+        btn_nueva.visible = True
+        try:
+            bloque_nueva.update()
+            btn_nueva.update()
+        except Exception:
+            pass
+
+    btn_cancel = ft.IconButton(
+        ft.Icons.CLOSE,
+        icon_color=es.COLOR_TEXTO_SUAVE,
+        tooltip="Cancelar",
+        on_click=cancelar,
+    )
+
+    bloque_nueva = ft.Column([
+        ft.Row([tf_nueva, btn_ok, btn_cancel], spacing=6),
+        sugerencia,
+        error_lbl,
+    ], spacing=4, visible=False)
+
+    def mostrar(e):
+        bloque_nueva.visible = True
+        btn_nueva.visible = False
+        try:
+            bloque_nueva.update()
+            btn_nueva.update()
+        except Exception:
+            pass
+
+    btn_nueva = ft.TextButton(
+        "+ Nuevo tipo de producto",
+        icon=ft.Icons.ADD,
+        on_click=mostrar,
+        style=ft.ButtonStyle(color=es.COLOR_ACENTO),
+    )
+
+    contenedor = ft.Column([dd, btn_nueva, bloque_nueva],
+                           spacing=4, tight=True)
+
+    return dd, contenedor
+
+
 # ============ modal entrada ============
 
 def modal_entrada(app, producto=None, on_refresh=None):
@@ -259,6 +426,13 @@ def modal_entrada(app, producto=None, on_refresh=None):
         ],
         **es.borde_textfield(12),
     )
+
+    cat_default = None
+    if producto and producto.get("categoria_id"):
+        cat_default = producto["categoria_id"]
+
+    dd_cat, bloque_cat = _construir_selector_categoria(cat_default, None)
+
     tf_fecha = ft.TextField(
         label="Fecha y hora (YYYY-MM-DD)",
         value=_ahora_str(),
@@ -269,24 +443,31 @@ def modal_entrada(app, producto=None, on_refresh=None):
 
     def upd(e=None):
         n = (tf_p.value or "").strip()
-        if not n:
-            lbl.content = caja_info("Escribe un producto.")
-        else:
+        cod = (tf_cod.value or "").strip()
+        if not n and not cod:
+            lbl.content = caja_info("Escribe un producto o un código.")
+        elif n:
             p = inv.buscar_producto_por_nombre(n, app.local_id)
             if p is None:
                 pg = inv.buscar_producto_global_por_nombre(n)
                 if pg:
-                    lbl.content = caja_info(
-                        f"Existe en «{pg['local_nombre']}». "
-                        f"Se creará en este local.", "info")
+                    codigo_global = pg.get("codigo")
+                    msg = (f"Existe en «{pg['local_nombre']}» con código "
+                           f"«{codigo_global or '—'}». Se reutilizará.")
+                    lbl.content = caja_info(msg, "info")
+                    if codigo_global and tf_cod.value != codigo_global:
+                        tf_cod.value = codigo_global
                 else:
                     lbl.content = caja_info("✨ Producto nuevo.", "info")
             else:
                 lbl.content = caja_info(
-                    f"Stock actual: {inv.fmt_cantidad(p['stock'])}  ·  "
+                    f"Código: {p.get('codigo') or '—'}  ·  "
+                    f"Stock: {inv.fmt_cantidad(p['stock'])}  ·  "
                     f"Moneda: {p.get('moneda_costo','CUP')}", "info")
                 if p.get("moneda_costo"):
                     dd_moneda.value = p["moneda_costo"]
+                if p.get("codigo") and tf_cod.value != p["codigo"]:
+                    tf_cod.value = p["codigo"]
         try:
             lbl.update()
         except Exception:
@@ -298,11 +479,10 @@ def modal_entrada(app, producto=None, on_refresh=None):
             return
         p = inv.buscar_producto_por_codigo(cod, app.local_id)
         if p is not None:
-            if not (tf_p.value or "").strip():
-                tf_p.value = p["nombre"]
+            tf_p.value = p["nombre"]
         else:
             pg = inv.buscar_producto_global_por_codigo(cod)
-            if pg and not (tf_p.value or "").strip():
+            if pg is not None:
                 tf_p.value = pg["nombre"]
         upd()
         try:
@@ -316,12 +496,12 @@ def modal_entrada(app, producto=None, on_refresh=None):
             return
         p = inv.buscar_producto_por_nombre(nom, app.local_id)
         if p is not None:
-            if not (tf_cod.value or "").strip():
-                tf_cod.value = p.get("codigo") or ""
+            if p.get("codigo"):
+                tf_cod.value = p["codigo"]
         else:
             pg = inv.buscar_producto_global_por_nombre(nom)
-            if pg and not (tf_cod.value or "").strip():
-                tf_cod.value = pg.get("codigo") or ""
+            if pg and pg.get("codigo"):
+                tf_cod.value = pg["codigo"]
         upd()
         try:
             page.update()
@@ -331,6 +511,7 @@ def modal_entrada(app, producto=None, on_refresh=None):
     tf_p.on_change = autocompletar_desde_nombre
     tf_cod.on_change = autocompletar_desde_codigo
     tf_p.on_focus = cursor_al_final
+    tf_cod.on_focus = cursor_al_final
     upd()
 
     def guardar(e):
@@ -358,12 +539,19 @@ def modal_entrada(app, producto=None, on_refresh=None):
         fecha = (tf_fecha.value or "").strip() or None
         moneda = dd_moneda.value or "CUP"
 
+        cat_id = None
+        if dd_cat.value:
+            try:
+                cat_id = int(dd_cat.value)
+            except ValueError:
+                cat_id = None
+
         try:
             info = inv.registrar_entrada(
                 nombre=n, cantidad=c, usuario=app.usuario,
                 local_id=app.local_id, codigo=codigo,
                 precio_costo=pc, precio_unitario=pu,
-                moneda=moneda, fecha=fecha)
+                moneda=moneda, categoria_id=cat_id, fecha=fecha)
         except Exception as ex:
             error_lbl.value = str(ex)
             page.update()
@@ -382,7 +570,7 @@ def modal_entrada(app, producto=None, on_refresh=None):
     dlg = ft.AlertDialog(
         title=ft.Text("Registrar entrada"),
         content=ft.Column([
-            tf_p, tf_cod, tf_c, tf_pc, tf_pu, dd_moneda,
+            tf_p, tf_cod, tf_c, tf_pc, tf_pu, dd_moneda, bloque_cat,
             ft.Container(height=10), tf_fecha, lbl, error_lbl,
         ], tight=True, spacing=10, width=340, scroll=ft.ScrollMode.AUTO),
         actions=[
@@ -409,6 +597,10 @@ def modal_salida(app, producto=None, on_refresh=None):
         label="Producto",
         value=producto["nombre"] if producto else "",
         autofocus=True, **es.estilo_textfield(12), height=54)
+    tf_cod = ft.TextField(
+        label="Código (opcional)",
+        value=(producto.get("codigo") or "") if producto else "",
+        **es.estilo_textfield(12), height=54)
     tf_c = ft.TextField(
         label="Cantidad", value="1",
         keyboard_type=ft.KeyboardType.NUMBER,
@@ -429,10 +621,12 @@ def modal_salida(app, producto=None, on_refresh=None):
 
     def upd(e=None):
         n = (tf_p.value or "").strip()
-        if not n:
+        cod = (tf_cod.value or "").strip()
+        clave = n or cod
+        if not clave:
             lbl.content = caja_info("Selecciona un producto.")
         else:
-            p = inv.buscar_producto(n, app.local_id)
+            p = inv.buscar_producto(clave, app.local_id)
             if p is None or not p.get("activo", 1):
                 lbl.content = caja_info("No encontrado o inactivo.", "error")
             else:
@@ -455,6 +649,7 @@ def modal_salida(app, producto=None, on_refresh=None):
                 else:
                     total = (pu - reb) * c
                     lbl.content = caja_info(
+                        f"{p.get('codigo') or '—'}  ·  "
                         f"{inv.fmt_cantidad(p['stock'])} → "
                         f"{inv.fmt_cantidad(p['stock'] - c)}  ·  "
                         f"Total: ${total:,.2f}", "ok")
@@ -463,16 +658,46 @@ def modal_salida(app, producto=None, on_refresh=None):
         except Exception:
             pass
 
-    tf_p.on_change = upd
+    def autocompletar_desde_codigo(e):
+        cod = (tf_cod.value or "").strip()
+        if not cod:
+            return
+        p = inv.buscar_producto_por_codigo(cod, app.local_id)
+        if p is not None:
+            tf_p.value = p["nombre"]
+        upd()
+        try:
+            page.update()
+        except Exception:
+            pass
+
+    def autocompletar_desde_nombre(e):
+        nom = (tf_p.value or "").strip()
+        if not nom:
+            return
+        p = inv.buscar_producto_por_nombre(nom, app.local_id)
+        if p is not None and p.get("codigo"):
+            tf_cod.value = p["codigo"]
+        upd()
+        try:
+            page.update()
+        except Exception:
+            pass
+
+    tf_p.on_change = autocompletar_desde_nombre
+    tf_cod.on_change = autocompletar_desde_codigo
     tf_c.on_change = upd
     tf_rebaja.on_change = upd
     tf_p.on_focus = cursor_al_final
+    tf_cod.on_focus = cursor_al_final
     upd()
 
     def guardar(e):
         error_lbl.value = ""
         n = (tf_p.value or "").strip()
-        if not n:
+        cod = (tf_cod.value or "").strip()
+        clave = n or cod
+        if not clave:
             error_lbl.value = "Selecciona un producto"
             page.update()
             return
@@ -490,7 +715,7 @@ def modal_salida(app, producto=None, on_refresh=None):
         fecha = (tf_fecha.value or "").strip() or None
         try:
             info = inv.registrar_salida(
-                nombre_o_codigo=n, cantidad=c, usuario=app.usuario,
+                nombre_o_codigo=clave, cantidad=c, usuario=app.usuario,
                 local_id=app.local_id, motivo=motivo,
                 rebaja=reb, fecha=fecha)
         except Exception as ex:
@@ -511,7 +736,7 @@ def modal_salida(app, producto=None, on_refresh=None):
     dlg = ft.AlertDialog(
         title=ft.Text("Registrar salida"),
         content=ft.Column([
-            tf_p, tf_c, tf_motivo, tf_rebaja,
+            tf_p, tf_cod, tf_c, tf_motivo, tf_rebaja,
             ft.Container(height=10), tf_fecha, lbl, error_lbl,
         ], tight=True, spacing=10, width=340, scroll=ft.ScrollMode.AUTO),
         actions=[
@@ -546,6 +771,10 @@ def modal_traspaso(app, producto=None, on_refresh=None):
         label="Producto",
         value=producto["nombre"] if producto else "",
         autofocus=True, **es.estilo_textfield(12), height=54)
+    tf_cod = ft.TextField(
+        label="Código (opcional)",
+        value=(producto.get("codigo") or "") if producto else "",
+        **es.estilo_textfield(12), height=54)
     tf_c = ft.TextField(
         label="Cantidad", value="1",
         keyboard_type=ft.KeyboardType.NUMBER,
@@ -564,10 +793,12 @@ def modal_traspaso(app, producto=None, on_refresh=None):
 
     def upd(e=None):
         n = (tf_p.value or "").strip()
-        if not n:
+        cod = (tf_cod.value or "").strip()
+        clave = n or cod
+        if not clave:
             lbl.content = caja_info("Selecciona un producto.")
         else:
-            p = inv.buscar_producto(n, app.local_id)
+            p = inv.buscar_producto(clave, app.local_id)
             if p is None or not p.get("activo", 1):
                 lbl.content = caja_info("No encontrado o inactivo.", "error")
             else:
@@ -589,15 +820,45 @@ def modal_traspaso(app, producto=None, on_refresh=None):
         except Exception:
             pass
 
-    tf_p.on_change = upd
+    def autocompletar_desde_codigo(e):
+        cod = (tf_cod.value or "").strip()
+        if not cod:
+            return
+        p = inv.buscar_producto_por_codigo(cod, app.local_id)
+        if p is not None:
+            tf_p.value = p["nombre"]
+        upd()
+        try:
+            page.update()
+        except Exception:
+            pass
+
+    def autocompletar_desde_nombre(e):
+        nom = (tf_p.value or "").strip()
+        if not nom:
+            return
+        p = inv.buscar_producto_por_nombre(nom, app.local_id)
+        if p is not None and p.get("codigo"):
+            tf_cod.value = p["codigo"]
+        upd()
+        try:
+            page.update()
+        except Exception:
+            pass
+
+    tf_p.on_change = autocompletar_desde_nombre
+    tf_cod.on_change = autocompletar_desde_codigo
     tf_c.on_change = upd
     tf_p.on_focus = cursor_al_final
+    tf_cod.on_focus = cursor_al_final
     upd()
 
     def guardar(e):
         error_lbl.value = ""
         n = (tf_p.value or "").strip()
-        if not n:
+        cod = (tf_cod.value or "").strip()
+        clave = n or cod
+        if not clave:
             error_lbl.value = "Selecciona un producto"
             page.update()
             return
@@ -613,7 +874,7 @@ def modal_traspaso(app, producto=None, on_refresh=None):
             return
         try:
             inv.registrar_traspaso(
-                nombre_o_codigo=n, cantidad=c, usuario=app.usuario,
+                nombre_o_codigo=clave, cantidad=c, usuario=app.usuario,
                 local_origen_id=app.local_id,
                 local_destino_id=int(dd_dest.value))
         except Exception as ex:
@@ -621,7 +882,7 @@ def modal_traspaso(app, producto=None, on_refresh=None):
             page.update()
             return
 
-        txt = f"Traspaso: {n} -{inv.fmt_cantidad(c)}"
+        txt = f"Traspaso: {n or cod} -{inv.fmt_cantidad(c)}"
 
         def _despues():
             snack(page, txt, "ok")
@@ -633,7 +894,7 @@ def modal_traspaso(app, producto=None, on_refresh=None):
     dlg = ft.AlertDialog(
         title=ft.Text("Traspaso"),
         content=ft.Column([
-            lbl_origen, tf_p, tf_c, dd_dest, lbl, error_lbl,
+            lbl_origen, tf_p, tf_cod, tf_c, dd_dest, lbl, error_lbl,
         ], tight=True, spacing=10, width=340, scroll=ft.ScrollMode.AUTO),
         actions=[
             ft.TextButton("Cancelar",
@@ -744,6 +1005,55 @@ def _dlg_precio_costo(app, prod, on_refresh=None):
 
 def _dlg_precio_venta(app, prod, on_refresh=None):
     _dlg_precio(app, prod, "venta", on_refresh)
+
+
+def _dlg_categoria(app, prod, on_refresh=None):
+    page = app.page
+    cat_actual = None
+    if prod.get("categoria_id"):
+        cat_actual = prod["categoria_id"]
+
+    dd_cat, bloque_cat = _construir_selector_categoria(cat_actual, None)
+
+    error_lbl = ft.Text("", color=es.COLOR_PELIGRO, size=12)
+    dlg_ref = {"dlg": None}
+
+    def guardar(e):
+        error_lbl.value = ""
+        cat_id = None
+        if dd_cat.value:
+            try:
+                cat_id = int(dd_cat.value)
+            except ValueError:
+                cat_id = None
+        try:
+            inv.set_categoria(prod["id"], cat_id, app.usuario)
+        except Exception as ex:
+            error_lbl.value = str(ex)
+            page.update()
+            return
+
+        def _despues():
+            snack(page, "Tipo actualizado (propagado)", "ok")
+            if on_refresh:
+                on_refresh()
+
+        cerrar_dialogo(page, dlg_ref["dlg"], on_close=_despues)
+
+    dlg = ft.AlertDialog(
+        title=ft.Text(f"Tipo: {prod['nombre']}"),
+        content=ft.Column([bloque_cat, error_lbl],
+                          tight=True, width=340, spacing=8),
+        actions=[
+            ft.TextButton("Cancelar",
+                          on_click=lambda e: cerrar_dialogo(page, dlg_ref["dlg"])),
+            ft.FilledButton("Guardar", on_click=guardar,
+                            style=es.estilo_boton_marca()),
+        ],
+        actions_alignment=ft.MainAxisAlignment.END,
+    )
+    dlg_ref["dlg"] = dlg
+    page.show_dialog(dlg)
 
 
 def _dlg_codigo(app, prod, on_refresh=None):

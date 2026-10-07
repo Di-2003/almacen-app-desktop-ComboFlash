@@ -1,14 +1,14 @@
 [project]
 name = "almacen-movil-raidel"
 version = "1.0.0"
-description = "Almacén Raidel — multi-local (Flet 1.0+)"
+description = "Almacen — multi-local (Flet 1.0+)"
 dependencies = [
     "flet==1.0.3",
     "openpyxl"
 ]
 
 [tool.flet]
-product_name = "Almacén Raidel"
+product_name = "Almacen"
 package_name = "com.combosflash.almacen_raidel"
 icon = "recursos/icon.png"
 assets = ["recursos"]
@@ -16,17 +16,9 @@ assets = ["recursos"]
 [tool.flet.icons]
 android = "recursos/icon.png"
 
-# ─── ANULACIÓN DE VERSIÓN jni ──────────────────────────────
-# Flet 1.0.3 fija jni==1.0.0, pero jni_flutter (dependencia
-# transitiva) exige jni>=1.1.0. Sin esto, el build falla con:
-#   "The generated bindings expect package:jni ^1.1.0"
-# Al forzar jni=1.1.0 aquí, el conflicto se resuelve.
 [tool.flet.flutter.pubspec.dependency_overrides]
 jni = "1.1.0"
 
-# ─── PERMISOS ANDROID ──────────────────────────────────────
-# Necesarios para que el FilePicker y el guardado de backups
-# funcionen en Android 11+ (Scoped Storage).
 [tool.flet.android.permission]
 "android.permission.READ_EXTERNAL_STORAGE" = true
 "android.permission.WRITE_EXTERNAL_STORAGE" = true

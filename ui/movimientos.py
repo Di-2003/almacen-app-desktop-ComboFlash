@@ -1,6 +1,6 @@
 """
 Historial de movimientos con filtros y edición.
-Incluye opción de eliminar (solo admin) que revierte el stock.
+Paginación a 30 movs para carga rápida.
 """
 import flet as ft
 import inventario as inv
@@ -11,6 +11,8 @@ from ui.componentes import (
 )
 from ui.principal import barra_navegacion
 
+
+PASO_PAGINACION = 30
 
 _TIPOS_COLOR = {
     "ENTRADA":      (es.COLOR_EXITO, es.COLOR_EXITO_SUAVE,
@@ -32,7 +34,7 @@ _TIPOS_COLOR = {
 
 def vista_movimientos(app):
     page = app.page
-    estado = {"filtro": "", "tipo": None, "limite": 300}
+    estado = {"filtro": "", "tipo": None, "limite": PASO_PAGINACION}
     lista = ft.Column(spacing=8, expand=True, scroll=ft.ScrollMode.AUTO)
     info = ft.Text("", size=11, color=es.COLOR_TEXTO_SUAVE)
     filtros_row = ft.Row(spacing=8, scroll=ft.ScrollMode.AUTO)
@@ -72,6 +74,7 @@ def vista_movimientos(app):
 
     def set_filtro(t):
         estado["tipo"] = t
+        estado["limite"] = PASO_PAGINACION
         _rebuild_filtros()
         refrescar()
 
@@ -162,6 +165,22 @@ def vista_movimientos(app):
                 ft.Icons.HISTORY_TOGGLE_OFF, "Sin movimientos",
                 "Ajusta los filtros o agrega un movimiento."))
 
+        if len(movs) >= estado["limite"]:
+            def cargar_mas(e):
+                estado["limite"] += PASO_PAGINACION
+                refrescar()
+            lista.controls.append(ft.Container(
+                content=ft.TextButton(
+                    f"Cargar {PASO_PAGINACION} más  "
+                    f"(mostrando {len(movs)})",
+                    icon=ft.Icons.EXPAND_MORE,
+                    on_click=cargar_mas,
+                    style=ft.ButtonStyle(color=es.COLOR_ACENTO),
+                ),
+                alignment=ft.Alignment.CENTER,
+                padding=20,
+            ))
+
         info.value = f"{len(movs)} movimiento(s)"
         if mounted(lista):
             lista.update()
@@ -170,6 +189,7 @@ def vista_movimientos(app):
 
     def on_search(e):
         estado["filtro"] = (e.control.value or "").lower()
+        estado["limite"] = PASO_PAGINACION
         refrescar()
 
     cap = campo_busqueda(
@@ -256,7 +276,6 @@ def _detalle_movimiento(app, mv, on_refresh):
         ),
     ], spacing=8, tight=True)
 
-    # Botón de eliminar solo para admin
     if app.usuario["rol"] == "admin":
         contenido.controls.append(
             ft.Container(

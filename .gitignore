@@ -1,63 +1,55 @@
-# Python
+# ==== Flet ====
+.flet/
+build/
+storage/
+
+# ==== Datos de la app ====
+datos/
+backups/
+logs/
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+
+# ==== Tests ====
+_test_full/
+
+# ==== Python ====
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
+env/
+venv/
+.venv/
+ENV/
 build/
-develop-eggs/
 dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
 *.egg-info/
-.installed.cfg
-*.egg
+.eggs/
+pip-log.txt
+pip-delete-this-directory.txt
 
-# Flet
-.flet/
-storage/
-datos/
-backups/
-logs/
-_test_full/
-
-# Base de datos y backups (NO subir a GitHub)
-*.db
-*.db-journal
-*.db-wal
-*.db-shm
-almacen.db
-almacen_backup_*.db
-almacen_antes_de_importar_*.db
-almacen.test_datos_previo_*.db
-
-# Excel generados
-inventario_*.xlsx
-test_excel_salida.xlsx
-
-# IDE
+# ==== IDE ====
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 
-# OS
+# ==== OS ====
 .DS_Store
 Thumbs.db
+desktop.ini
 
-# Entornos virtuales
-venv/
-env/
-ENV/
-.venv/
+# ==== Recursos generados ====
+# Las imágenes sí se suben (icon.png, login_bg.png, splash.png).
+# Solo ignoramos los archivos temporales:
+recursos/*.tmp
+recursos/*~
 
-# Logs
+# ==== Archivos de test locales ====
 *.log
+test_*.db

@@ -1,27 +1,48 @@
 """
-Lógica de negocio del almacén. Multi-local + multimoneda.
+Lógica de negocio del almacén. Multi-local + multimoneda + categorías.
 
-MODELO DE MONEDA:
-  Cada producto tiene `moneda_costo` y `moneda_venta` (CUP/USD/EUR).
-  Se guardan DOS versiones de cada precio:
-    - `precio_costo_orig` / `precio_unitario_orig`: en su moneda.
-    - `precio_costo` / `precio_unitario`: en CUP con la tasa actual.
-  Cuando cambia la tasa, se recalcula el CUP desde el original.
+CONSISTENCIA DE CÓDIGOS: un nombre → un código global.
+GANANCIA REAL: cada movimiento ENTRADA/SALIDA guarda precio_costo_momento.
 
-PROMEDIO PONDERADO:
-  Al entrar mercancía nueva, el costo se promedia en la MONEDA
-  ORIGINAL del producto. El precio de venta NO se promedia: se
-  sobrescribe si viene > 0.
-
-MONEDA DE VISUALIZACIÓN:
-  El usuario puede elegir en qué moneda ver los precios (CUP/USD/EUR).
-  Se guarda en configuracion.moneda_visualizacion.
+CACHÉ EN MEMORIA:
+  Las lecturas frecuentes se cachean. Cualquier escritura limpia la
+  caché. Esto hace que listar_productos/totales_local sean instantáneos
+  al cambiar de pestaña o local.
 """
 import re
 import uuid
+import functools
 from datetime import datetime
 from db import get_conn, GENERAL_ID, MONEDAS_VALIDAS
 from locales import listar_locales
+
+
+# ============================================================
+# CACHÉ
+# ============================================================
+_CACHE: dict = {}
+
+
+def invalidar_cache() -> None:
+    _CACHE.clear()
+
+
+def _write(fn):
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _CACHE.clear()
+    return wrapper
+
+
+def _cached(key, producer):
+    if key in _CACHE:
+        return _CACHE[key]
+    val = producer()
+    _CACHE[key] = val
+    return val
 
 
 # ================= ROLES =================
@@ -67,7 +88,6 @@ def fmt_precio(p) -> str:
 
 
 def fmt_precio_moneda(p, moneda: str = "CUP") -> str:
-    """Formatea un precio con símbolo según la moneda."""
     v = float(p or 0)
     m = (moneda or "CUP").upper()
     if m == "USD":
@@ -95,9 +115,7 @@ def normalizar_codigo(codigo) -> str | None:
 def siguiente_codigo(local_id: int) -> str:
     with get_conn() as conn:
         filas = conn.execute(
-            "SELECT codigo FROM productos WHERE local_id=? "
-            "AND codigo IS NOT NULL",
-            (local_id,),
+            "SELECT codigo FROM productos WHERE codigo IS NOT NULL"
         ).fetchall()
     max_letra = None
     max_num = 0
@@ -139,6 +157,39 @@ def _validar_codigo_unico(conn, local_id, codigo, excluir_id=None) -> None:
             f"El código «{c}» ya está en uso por «{row['nombre']}» "
             f"en este local."
         )
+
+
+def _validar_codigo_global(conn, nombre, codigo, excluir_id=None) -> None:
+    c = normalizar_codigo(codigo)
+    if not c:
+        return
+    sql = ("SELECT p.nombre, l.nombre AS local_nombre "
+           "FROM productos p JOIN locales l ON l.id=p.local_id "
+           "WHERE p.codigo=? COLLATE NOCASE "
+           "AND p.nombre<>? COLLATE NOCASE")
+    params = [c, nombre]
+    if excluir_id is not None:
+        sql += " AND p.id<>?"
+        params.append(excluir_id)
+    sql += " LIMIT 1"
+    row = conn.execute(sql, tuple(params)).fetchone()
+    if row:
+        raise ValueError(
+            f"El código «{c}» ya está en uso por «{row['nombre']}» "
+            f"en «{row['local_nombre']}»."
+        )
+
+
+def _codigo_global_para_nombre(conn, nombre, excluir_local_id=None):
+    sql = ("SELECT codigo FROM productos WHERE nombre=? COLLATE NOCASE "
+           "AND codigo IS NOT NULL AND codigo<>''")
+    params = [nombre]
+    if excluir_local_id is not None:
+        sql += " AND local_id<>?"
+        params.append(excluir_local_id)
+    sql += " LIMIT 1"
+    row = conn.execute(sql, tuple(params)).fetchone()
+    return row["codigo"] if row else None
 
 
 # ================= CONFIG =================
@@ -243,10 +294,6 @@ def convertir(valor: float, de_moneda: str, a_moneda: str) -> float:
 
 
 def mostrar_precio(precio_cup: float, moneda_destino: str = None) -> str:
-    """
-    Formatea un precio CUP en la moneda de visualización actual
-    (o la indicada). Ej: '$ 2,500.00' o 'USD$ 10.00'.
-    """
     if moneda_destino is None:
         moneda_destino = get_moneda_visualizacion()
     valor = de_cup(precio_cup, moneda_destino)
@@ -272,31 +319,42 @@ def color_de_producto(prod: dict) -> str:
                        prod["umbral_amarillo"])
 
 
-# ================= CONSULTAS =================
+# ================= CONSULTAS (cacheadas) =================
 
 def listar_productos(local_id, solo_activos: bool = True) -> list[dict]:
-    if local_id == GENERAL_ID:
-        return _listar_general(solo_activos)
-    sql = "SELECT * FROM productos WHERE local_id=?"
-    if solo_activos:
-        sql += " AND activo=1"
-    sql += (" ORDER BY "
-            "CASE WHEN codigo IS NULL OR codigo='' THEN 1 ELSE 0 END, "
-            "codigo COLLATE NOCASE, nombre COLLATE NOCASE")
-    with get_conn() as conn:
-        return [dict(r) for r in conn.execute(sql, (local_id,)).fetchall()]
+    key = ("listar_productos", local_id, solo_activos)
+
+    def _producer():
+        if local_id == GENERAL_ID:
+            return _listar_general(solo_activos)
+        sql = "SELECT * FROM productos WHERE local_id=?"
+        if solo_activos:
+            sql += " AND activo=1"
+        sql += (" ORDER BY "
+                "CASE WHEN codigo IS NULL OR codigo='' THEN 1 ELSE 0 END, "
+                "codigo COLLATE NOCASE, nombre COLLATE NOCASE")
+        with get_conn() as conn:
+            return [dict(r) for r in
+                    conn.execute(sql, (local_id,)).fetchall()]
+
+    return _cached(key, _producer)
 
 
 def listar_productos_inactivos(local_id) -> list[dict]:
-    if local_id == GENERAL_ID:
-        return []
-    with get_conn() as conn:
-        filas = conn.execute(
-            "SELECT * FROM productos WHERE local_id=? AND activo=0 "
-            "ORDER BY nombre COLLATE NOCASE",
-            (local_id,),
-        ).fetchall()
-    return [dict(r) for r in filas]
+    key = ("listar_inactivos", local_id)
+
+    def _producer():
+        if local_id == GENERAL_ID:
+            return []
+        with get_conn() as conn:
+            filas = conn.execute(
+                "SELECT * FROM productos WHERE local_id=? AND activo=0 "
+                "ORDER BY nombre COLLATE NOCASE",
+                (local_id,),
+            ).fetchall()
+        return [dict(r) for r in filas]
+
+    return _cached(key, _producer)
 
 
 def _listar_general(solo_activos: bool) -> list[dict]:
@@ -316,7 +374,8 @@ def _listar_general(solo_activos: bool) -> list[dict]:
             MAX(umbral_amarillo) AS umbral_amarillo,
             MAX(fecha_ultima_mod) AS fecha_ultima_mod,
             MAX(moneda_costo) AS moneda_costo,
-            MAX(moneda_venta) AS moneda_venta
+            MAX(moneda_venta) AS moneda_venta,
+            MAX(categoria_id) AS categoria_id
         FROM productos
         WHERE local_id IN ({placeholders}){activo_sql}
         GROUP BY nombre COLLATE NOCASE
@@ -413,7 +472,7 @@ def buscar_producto_global_por_nombre(nombre: str) -> dict | None:
 
 
 def listar_movimientos(local_id=None, producto_id=None,
-                       limite: int = 500) -> list[dict]:
+                       limite: int = 100) -> list[dict]:
     sql = ("SELECT m.*, p.nombre AS producto, p.codigo AS codigo, "
            "l.nombre AS local FROM movimientos m "
            "JOIN productos p ON p.id=m.producto_id "
@@ -431,7 +490,8 @@ def listar_movimientos(local_id=None, producto_id=None,
     sql += " ORDER BY m.fecha DESC, m.id DESC LIMIT ?"
     params.append(limite)
     with get_conn() as conn:
-        return [dict(r) for r in conn.execute(sql, tuple(params)).fetchall()]
+        return [dict(r) for r in
+                conn.execute(sql, tuple(params)).fetchall()]
 
 
 # ================= EXCEPCIONES =================
@@ -461,17 +521,22 @@ def _promedio_ponderado(stock_antes, orig_antes, cant_nueva, orig_nueva):
             + (float(cant_nueva) * float(orig_nueva or 0))) / total
 
 
+def conn_check_categoria(cat_id):
+    from db import get_conn
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM categorias WHERE id=? AND activo=1", (cat_id,)
+        ).fetchone()
+        return row is not None
+
+
 # ================= ENTRADAS =================
 
+@_write
 def registrar_entrada(nombre: str, cantidad, usuario, local_id: int,
                       codigo=None, precio_costo=None,
                       precio_unitario=None, moneda="CUP",
-                      fecha=None) -> dict:
-    """
-    Entrada de un producto. `moneda` en CUP/USD/EUR.
-    Si el producto existe, se hace promedio ponderado del costo en su
-    moneda original. El precio de venta se sobrescribe si viene > 0.
-    """
+                      categoria_id=None, fecha=None) -> dict:
     username = _autorizar(usuario, _ROLES_OPERATIVOS)
     if local_id == GENERAL_ID:
         raise ValueError("No se puede registrar entrada en 'General'")
@@ -511,6 +576,10 @@ def registrar_entrada(nombre: str, cantidad, usuario, local_id: int,
         except (TypeError, ValueError):
             pass
 
+    if categoria_id is not None:
+        if not conn_check_categoria(categoria_id):
+            categoria_id = None
+
     with get_conn() as conn:
         prod = conn.execute(
             "SELECT * FROM productos WHERE local_id=? "
@@ -518,8 +587,16 @@ def registrar_entrada(nombre: str, cantidad, usuario, local_id: int,
             (local_id, nombre),
         ).fetchone()
 
+        pc_momento = 0.0
+
         if prod is None:
+            codigo_global = _codigo_global_para_nombre(conn, nombre, local_id)
+            if codigo_global:
+                codigo = codigo_global
+
             _validar_codigo_unico(conn, local_id, codigo)
+            _validar_codigo_global(conn, nombre, codigo)
+
             color_antes = "rojo"
             uv, ua = get_umbrales_default()
             mc = moneda
@@ -528,27 +605,35 @@ def registrar_entrada(nombre: str, cantidad, usuario, local_id: int,
             pu_orig = pu_in or 0.0
             pc_cup = a_cup(pc_orig, mc)
             pu_cup = a_cup(pu_orig, mv)
+            pc_momento = pc_cup
             cur = conn.execute(
                 "INSERT INTO productos("
                 "local_id, codigo, nombre, stock,"
                 "umbral_verde, umbral_amarillo,"
                 "precio_costo, precio_unitario,"
                 "precio_costo_orig, precio_unitario_orig,"
-                "moneda_costo, moneda_venta,"
+                "moneda_costo, moneda_venta, categoria_id,"
                 "fecha_ultima_mod, activo) "
-                "VALUES(?,?,?,0,?,?,?,?,?,?,?,?,?,1)",
+                "VALUES(?,?,?,0,?,?,?,?,?,?,?,?,?,?,1)",
                 (local_id, codigo, nombre, uv, ua,
                  pc_cup, pu_cup, pc_orig, pu_orig,
-                 mc, mv, fecha),
+                 mc, mv, categoria_id, fecha),
             )
             pid = cur.lastrowid
         else:
             color_antes = color_de_producto(dict(prod))
             pid = prod["id"]
 
+            codigo_global = _codigo_global_para_nombre(conn, nombre, local_id)
+            if codigo_global:
+                codigo = codigo_global
+            elif not codigo:
+                codigo = (prod["codigo"] or "").strip() or None
+
             codigo_actual = (prod["codigo"] or "").strip()
             if codigo and codigo != codigo_actual:
                 _validar_codigo_unico(conn, local_id, codigo, excluir_id=pid)
+                _validar_codigo_global(conn, nombre, codigo, excluir_id=pid)
                 conn.execute("UPDATE productos SET codigo=? WHERE id=?",
                              (codigo, pid))
 
@@ -567,6 +652,9 @@ def registrar_entrada(nombre: str, cantidad, usuario, local_id: int,
                     "precio_costo_orig=?, fecha_ultima_mod=? WHERE id=?",
                     (pc_cup, pc_orig, fecha, pid),
                 )
+                pc_momento = pc_cup
+            else:
+                pc_momento = float(prod["precio_costo"] or 0)
 
             if pu_in is not None:
                 pu_orig = convertir(pu_in, moneda, mv)
@@ -577,8 +665,16 @@ def registrar_entrada(nombre: str, cantidad, usuario, local_id: int,
                     (pu_cup, pu_orig, fecha, pid),
                 )
 
+            if categoria_id is not None:
+                conn.execute(
+                    "UPDATE productos SET categoria_id=? WHERE id=?",
+                    (categoria_id, pid),
+                )
+
             if not prod["activo"]:
-                conn.execute("UPDATE productos SET activo=1 WHERE id=?", (pid,))
+                conn.execute(
+                    "UPDATE productos SET activo=1 WHERE id=?", (pid,)
+                )
 
         conn.execute(
             "UPDATE productos SET stock=stock+?, fecha_ultima_mod=? "
@@ -587,9 +683,9 @@ def registrar_entrada(nombre: str, cantidad, usuario, local_id: int,
         )
         conn.execute(
             "INSERT INTO movimientos(local_id,producto_id,tipo,cantidad,"
-            "grupo_id,fecha,usuario) "
-            "VALUES(?,?,'ENTRADA',?,?,?,?)",
-            (local_id, pid, cantidad, grupo_id, fecha, username),
+            "grupo_id,fecha,usuario,precio_costo_momento) "
+            "VALUES(?,?,'ENTRADA',?,?,?,?,?)",
+            (local_id, pid, cantidad, grupo_id, fecha, username, pc_momento),
         )
         nuevo = dict(conn.execute(
             "SELECT * FROM productos WHERE id=?", (pid,)
@@ -601,11 +697,13 @@ def registrar_entrada(nombre: str, cantidad, usuario, local_id: int,
         "color_despues": color_despues,
         "stock": nuevo["stock"],
         "nombre": nuevo["nombre"],
+        "codigo": nuevo["codigo"],
     }
 
 
 # ================= SALIDAS =================
 
+@_write
 def registrar_salida(nombre_o_codigo, cantidad, usuario, local_id,
                      motivo=None, rebaja=0.0,
                      precio_unitario_momento=None,
@@ -643,6 +741,7 @@ def registrar_salida(nombre_o_codigo, cantidad, usuario, local_id,
         pu = (float(prod["precio_unitario"] or 0)
               if precio_unitario_momento is None
               else float(precio_unitario_momento))
+        pc_momento = float(prod["precio_costo"] or 0)
         if rebaja > pu:
             raise ValueError(
                 f"La rebaja ({fmt_precio(rebaja)}) no puede superar el "
@@ -656,9 +755,10 @@ def registrar_salida(nombre_o_codigo, cantidad, usuario, local_id,
         conn.execute(
             "INSERT INTO movimientos(local_id,producto_id,tipo,cantidad,"
             "motivo,grupo_id,detalle,rebaja,precio_unitario_momento,"
-            "fecha,usuario) VALUES(?,?,'SALIDA',?,?,?,?,?,?,?,?)",
+            "precio_costo_momento,fecha,usuario) "
+            "VALUES(?,?,'SALIDA',?,?,?,?,?,?,?,?,?)",
             (local_id, prod["id"], cantidad, motivo, grupo_id,
-             detalle, rebaja, pu, fecha, username),
+             detalle, rebaja, pu, pc_momento, fecha, username),
         )
         nuevo = dict(conn.execute(
             "SELECT * FROM productos WHERE id=?", (prod["id"],)
@@ -675,6 +775,7 @@ def registrar_salida(nombre_o_codigo, cantidad, usuario, local_id,
 
 # ================= TRASPASO =================
 
+@_write
 def registrar_traspaso(nombre_o_codigo, cantidad, usuario,
                        local_origen_id, local_destino_id, fecha=None):
     username = _autorizar(usuario, _ROLES_OPERATIVOS)
@@ -747,17 +848,18 @@ def _traspasar_producto_interno(nombre_o_codigo, cantidad, local_origen_id,
             pu_orig = float(origen.get("precio_unitario_orig") or 0)
             pc_cup = float(origen.get("precio_costo") or 0)
             pu_cup = float(origen.get("precio_unitario") or 0)
+            cat_id = origen.get("categoria_id")
             cur = conn.execute(
                 "INSERT INTO productos("
                 "local_id, codigo, nombre, stock,"
                 "umbral_verde, umbral_amarillo,"
                 "precio_costo, precio_unitario,"
                 "precio_costo_orig, precio_unitario_orig,"
-                "moneda_costo, moneda_venta,"
+                "moneda_costo, moneda_venta, categoria_id,"
                 "fecha_ultima_mod, activo) "
-                "VALUES(?,?,?,0,?,?,?,?,?,?,?,?,?,1)",
+                "VALUES(?,?,?,0,?,?,?,?,?,?,?,?,?,?,1)",
                 (local_destino_id, codigo_destino, nombre, uv, ua,
-                 pc_cup, pu_cup, pc_orig, pu_orig, mc, mv, fecha),
+                 pc_cup, pu_cup, pc_orig, pu_orig, mc, mv, cat_id, fecha),
             )
             destino_id = cur.lastrowid
         else:
@@ -779,6 +881,7 @@ def _traspasar_producto_interno(nombre_o_codigo, cantidad, local_origen_id,
 
 # ================= UMBRALES =================
 
+@_write
 def cambiar_umbrales(producto_id, umbral_verde, umbral_amarillo, usuario):
     username = _autorizar(usuario, _ROLES_OPERATIVOS)
     try:
@@ -810,8 +913,31 @@ def cambiar_umbrales(producto_id, umbral_verde, umbral_amarillo, usuario):
         )
 
 
+# ================= CATEGORÍA =================
+
+@_write
+def set_categoria(producto_id, categoria_id, usuario):
+    _autorizar(usuario, _ROLES_OPERATIVOS)
+    if categoria_id is not None and not conn_check_categoria(categoria_id):
+        raise ValueError("Categoría inválida o inactiva")
+    fecha = _ahora()
+    with get_conn() as conn:
+        prod = conn.execute(
+            "SELECT local_id, nombre FROM productos WHERE id=?",
+            (producto_id,),
+        ).fetchone()
+        if prod is None:
+            raise ValueError("Producto no encontrado")
+        conn.execute(
+            "UPDATE productos SET categoria_id=?, fecha_ultima_mod=? "
+            "WHERE nombre=? COLLATE NOCASE",
+            (categoria_id, fecha, prod["nombre"]),
+        )
+
+
 # ================= PRECIOS =================
 
+@_write
 def set_precio_costo(producto_id, valor, moneda, usuario, propagar=True):
     username = _autorizar(usuario, _ROLES_OPERATIVOS)
     try:
@@ -853,6 +979,7 @@ def set_precio_costo(producto_id, valor, moneda, usuario, propagar=True):
         )
 
 
+@_write
 def set_precio_unitario(producto_id, valor, moneda, usuario,
                         propagar=True):
     username = _autorizar(usuario, _ROLES_OPERATIVOS)
@@ -896,11 +1023,8 @@ def set_precio_unitario(producto_id, valor, moneda, usuario,
         )
 
 
+@_write
 def cambiar_moneda_precio(producto_id, campo, nueva_moneda, usuario):
-    """
-    Cambia la moneda de un precio y convierte el valor actual usando
-    las tasas actuales. `campo` = 'costo' | 'venta'.
-    """
     _autorizar(usuario, _ROLES_OPERATIVOS)
     if campo not in ("costo", "venta"):
         raise ValueError("Campo inválido")
@@ -938,11 +1062,8 @@ def cambiar_moneda_precio(producto_id, campo, nueva_moneda, usuario):
             )
 
 
+@_write
 def recalcular_todos_los_precios() -> int:
-    """
-    Recalcula el CUP de todos los productos desde su valor original.
-    Se llama cuando cambia la tasa en Perfil.
-    """
     usd = get_tasa_usd()
     eur = get_tasa_eur()
     fecha = _ahora()
@@ -971,6 +1092,7 @@ def recalcular_todos_los_precios() -> int:
 
 # ================= CÓDIGO / NOMBRE =================
 
+@_write
 def set_codigo(producto_id, nuevo_codigo, usuario):
     username = _autorizar(usuario, _ROLES_OPERATIVOS)
     with get_conn() as conn:
@@ -981,18 +1103,12 @@ def set_codigo(producto_id, nuevo_codigo, usuario):
         if prod is None:
             raise ValueError("Producto no encontrado")
         c = normalizar_codigo(nuevo_codigo)
+
         if c:
-            otro = conn.execute(
-                "SELECT p.nombre, l.nombre AS local_nombre "
-                "FROM productos p JOIN locales l ON l.id=p.local_id "
-                "WHERE p.codigo=? COLLATE NOCASE "
-                "AND p.nombre<>? COLLATE NOCASE",
-                (c, prod["nombre"]),
-            ).fetchone()
-            if otro:
-                raise ValueError(
-                    f"El código «{c}» ya está en uso por "
-                    f"«{otro['nombre']}» en «{otro['local_nombre']}».")
+            _validar_codigo_global(conn, prod["nombre"], c)
+            _validar_codigo_unico(conn, prod["local_id"], c,
+                                  excluir_id=producto_id)
+
         fecha = _ahora()
         conn.execute(
             "UPDATE productos SET codigo=?, fecha_ultima_mod=? "
@@ -1007,6 +1123,7 @@ def set_codigo(producto_id, nuevo_codigo, usuario):
         )
 
 
+@_write
 def renombrar_producto(producto_id, nombre_nuevo, usuario):
     username = _autorizar(usuario, _ROLES_OPERATIVOS)
     nombre_nuevo = (nombre_nuevo or "").strip()
@@ -1020,7 +1137,7 @@ def renombrar_producto(producto_id, nombre_nuevo, usuario):
         if prod is None:
             raise ValueError("Producto no encontrado")
         nombre_actual = prod["nombre"]
-        if nombre_actual.lower() == nombre_nuevo.lower():
+        if nombre_actual == nombre_nuevo:
             raise ValueError("El nombre nuevo es igual al actual")
         otro = conn.execute(
             "SELECT p.nombre, l.nombre AS local_nombre "
@@ -1048,6 +1165,7 @@ def renombrar_producto(producto_id, nombre_nuevo, usuario):
 
 # ================= BAJA / REACTIVAR =================
 
+@_write
 def dar_baja(producto_id, usuario, motivo=None):
     username = _autorizar(usuario, _ROLES_OPERATIVOS)
     motivo = (motivo or "").strip() or "Merma"
@@ -1075,6 +1193,7 @@ def dar_baja(producto_id, usuario, motivo=None):
         )
 
 
+@_write
 def reactivar_producto(producto_id, usuario):
     username = _autorizar(usuario, _ROLES_OPERATIVOS)
     fecha = _ahora()
@@ -1110,65 +1229,80 @@ def productos_stock_cero(local_id):
             if float(p["stock"] or 0) == 0]
 
 
-# ================= TOTALES =================
+def productos_por_categoria(local_id, categoria_id):
+    return [p for p in listar_productos(local_id, solo_activos=True)
+            if p.get("categoria_id") == categoria_id]
+
+
+# ================= TOTALES (cacheados) =================
 
 def totales_local(local_id) -> dict:
-    productos = listar_productos(local_id, solo_activos=True)
-    invertido = 0.0
-    venta_total = 0.0
-    for p in productos:
-        s = float(p["stock"] or 0)
-        invertido += float(p["precio_costo"] or 0) * s
-        venta_total += float(p["precio_unitario"] or 0) * s
-    return {
-        "invertido": invertido,
-        "venta_total": venta_total,
-        "diferencia": venta_total - invertido,
-    }
+    key = ("totales_local", local_id)
+
+    def _producer():
+        productos = listar_productos(local_id, solo_activos=True)
+        invertido = 0.0
+        venta_total = 0.0
+        for p in productos:
+            s = float(p["stock"] or 0)
+            invertido += float(p["precio_costo"] or 0) * s
+            venta_total += float(p["precio_unitario"] or 0) * s
+        return {
+            "invertido": invertido,
+            "venta_total": venta_total,
+            "diferencia": venta_total - invertido,
+        }
+
+    return _cached(key, _producer)
 
 
 def totales_por_concepto(local_id) -> dict:
-    filtro = ""
-    params = []
-    if local_id != GENERAL_ID:
-        filtro = " AND local_id=?"
-        params.append(local_id)
-    with get_conn() as conn:
-        ventas = conn.execute(
-            "SELECT COUNT(*) AS n, COALESCE(SUM(cantidad),0) AS cant, "
-            "COALESCE(SUM((precio_unitario_momento - rebaja) * cantidad),0) "
-            "AS monto FROM movimientos "
-            "WHERE tipo='SALIDA' "
-            "AND LOWER(TRIM(COALESCE(motivo,'')))='venta'" + filtro,
-            tuple(params),
-        ).fetchone()
-        entradas = conn.execute(
-            "SELECT COUNT(*) AS n, COALESCE(SUM(cantidad),0) AS cant "
-            "FROM movimientos WHERE tipo='ENTRADA'" + filtro,
-            tuple(params),
-        ).fetchone()
-        otras = conn.execute(
-            "SELECT COUNT(*) AS n, COALESCE(SUM(cantidad),0) AS cant "
-            "FROM movimientos WHERE tipo='SALIDA' "
-            "AND LOWER(TRIM(COALESCE(motivo,'')))<>'venta'" + filtro,
-            tuple(params),
-        ).fetchone()
-        bajas = conn.execute(
-            "SELECT COUNT(*) AS n, COALESCE(SUM(cantidad),0) AS cant "
-            "FROM movimientos WHERE tipo='BAJA'" + filtro,
-            tuple(params),
-        ).fetchone()
-    return {
-        "ventas": {"n": int(ventas["n"] or 0),
-                   "cantidad": float(ventas["cant"] or 0),
-                   "monto": float(ventas["monto"] or 0)},
-        "entradas": {"n": int(entradas["n"] or 0),
-                     "cantidad": float(entradas["cant"] or 0)},
-        "otras_salidas": {"n": int(otras["n"] or 0),
-                          "cantidad": float(otras["cant"] or 0)},
-        "bajas": {"n": int(bajas["n"] or 0),
-                  "cantidad": float(bajas["cant"] or 0)},
-    }
+    key = ("totales_concepto", local_id)
+
+    def _producer():
+        filtro = ""
+        params = []
+        if local_id != GENERAL_ID:
+            filtro = " AND local_id=?"
+            params.append(local_id)
+        with get_conn() as conn:
+            ventas = conn.execute(
+                "SELECT COUNT(*) AS n, COALESCE(SUM(cantidad),0) AS cant, "
+                "COALESCE(SUM((precio_unitario_momento - rebaja) * cantidad),0) "
+                "AS monto FROM movimientos "
+                "WHERE tipo='SALIDA' "
+                "AND LOWER(TRIM(COALESCE(motivo,'')))='venta'" + filtro,
+                tuple(params),
+            ).fetchone()
+            entradas = conn.execute(
+                "SELECT COUNT(*) AS n, COALESCE(SUM(cantidad),0) AS cant "
+                "FROM movimientos WHERE tipo='ENTRADA'" + filtro,
+                tuple(params),
+            ).fetchone()
+            otras = conn.execute(
+                "SELECT COUNT(*) AS n, COALESCE(SUM(cantidad),0) AS cant "
+                "FROM movimientos WHERE tipo='SALIDA' "
+                "AND LOWER(TRIM(COALESCE(motivo,'')))<>'venta'" + filtro,
+                tuple(params),
+            ).fetchone()
+            bajas = conn.execute(
+                "SELECT COUNT(*) AS n, COALESCE(SUM(cantidad),0) AS cant "
+                "FROM movimientos WHERE tipo='BAJA'" + filtro,
+                tuple(params),
+            ).fetchone()
+        return {
+            "ventas": {"n": int(ventas["n"] or 0),
+                       "cantidad": float(ventas["cant"] or 0),
+                       "monto": float(ventas["monto"] or 0)},
+            "entradas": {"n": int(entradas["n"] or 0),
+                         "cantidad": float(entradas["cant"] or 0)},
+            "otras_salidas": {"n": int(otras["n"] or 0),
+                              "cantidad": float(otras["cant"] or 0)},
+            "bajas": {"n": int(bajas["n"] or 0),
+                      "cantidad": float(bajas["cant"] or 0)},
+        }
+
+    return _cached(key, _producer)
 
 
 # ================= ELIMINAR MOVIMIENTO =================
@@ -1202,6 +1336,7 @@ def _revertir_efecto_stock(conn, producto_id, tipo, cantidad):
                  (nuevo, producto_id))
 
 
+@_write
 def eliminar_movimiento(mov_id, usuario):
     _autorizar(usuario, _ROLES_OPERATIVOS)
     with get_conn() as conn:

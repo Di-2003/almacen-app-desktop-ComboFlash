@@ -120,7 +120,6 @@ def fila_producto(prod, on_tap=None) -> ft.Container:
                                  color=es.COLOR_ACENTO))
         return ft.Column(hijos, spacing=2)
 
-    # Sub-etiqueta de moneda si NO es CUP
     sub_costo = f"({mc})" if mc != "CUP" else ""
     sub_venta = f"({mv})" if mv != "CUP" else ""
 
@@ -258,64 +257,77 @@ def bottom_sheet(content, page=None, alto_max_pct=0.85) -> ft.BottomSheet:
 
 
 def snack(page, texto, tipo="info"):
+    """SnackBar diferido para no chocar con cierres de diálogos."""
     colores = {
         "info": "#374151", "ok": "#16a34a",
         "error": "#dc2626", "warn": "#ca8a04",
     }
-    sb = ft.SnackBar(
-        content=ft.Text(texto, color="white", size=13),
-        bgcolor=colores.get(tipo, "#374151"),
-        duration=15000,
-        behavior=ft.SnackBarBehavior.FLOATING,
-        show_close_icon=True,
-        close_icon_color="white",
-    )
-    try:
-        page.open(sb)
-    except Exception:
+
+    async def _show():
+        import asyncio
         try:
-            page.show_dialog(sb)
+            await asyncio.sleep(0.15)
         except Exception:
             pass
+        sb = ft.SnackBar(
+            content=ft.Text(texto, color="white", size=13),
+            bgcolor=colores.get(tipo, "#374151"),
+            duration=15000,
+            behavior=ft.SnackBarBehavior.FLOATING,
+            show_close_icon=True,
+            close_icon_color="white",
+        )
+        try:
+            page.open(sb)
+        except Exception:
+            try:
+                page.show_dialog(sb)
+            except Exception:
+                pass
+
+    try:
+        page.run_task(_show)
+    except Exception:
+        pass
 
 
 def cerrar_dialogo(page, control=None, on_close=None):
-    if control is not None:
-        try:
-            control.open = False
-        except Exception:
-            pass
+    """
+    Cierra el diálogo/BottomSheet de arriba.
+    Si on_close existe, se ejecuta DIFERIDO (150ms) para que el pop
+    se aplique antes de abrir otro diálogo.
+    """
     try:
         page.pop_dialog()
     except Exception:
         pass
-    if control is not None:
-        try:
-            page.close(control)
-        except Exception:
-            pass
     try:
         page.update()
     except Exception:
         pass
-    if on_close is not None:
-        async def _deferred():
-            import asyncio
-            try:
-                await asyncio.sleep(0.08)
-            except Exception:
-                pass
-            try:
-                on_close()
-            except Exception:
-                pass
+
+    if on_close is None:
+        return
+
+    async def _deferred():
+        import asyncio
         try:
-            page.run_task(_deferred)
+            await asyncio.sleep(0.15)
         except Exception:
-            try:
-                on_close()
-            except Exception:
-                pass
+            pass
+        try:
+            on_close()
+        except Exception as ex:
+            print(f"[cerrar_dialogo] on_close error: {ex}")
+
+    try:
+        page.run_task(_deferred)
+    except Exception:
+        # Fallback sincrónico
+        try:
+            on_close()
+        except Exception:
+            pass
 
 
 def cursor_al_final(e):
@@ -335,3 +347,105 @@ def mounted(ctrl) -> bool:
         return True
     except Exception:
         return False
+    
+def panel_modal(contenido, width=340):
+    """Envuelve contenido con estilo de diálogo."""
+    return ft.Container(
+        content=contenido,
+        bgcolor=es.COLOR_SUPERFICIE,
+        border_radius=16,
+        padding=20,
+        width=width,
+        shadow=ft.BoxShadow(
+            blur_radius=20,
+            spread_radius=0,
+            color="#00000099",
+            offset=ft.Offset(0, 6),
+        ),
+        border=ft.Border.all(1, es.COLOR_BORDE),
+    )
+
+
+def mostrar_modal(page, contenido, on_close=None):
+    """
+    Muestra contenido centrado con barrier semi-transparente.
+    Solo puede haber UN modal abierto a la vez: si hay otro, se cierra.
+    Devuelve una función cerrar() para cerrarlo manualmente.
+    """
+    # Cerrar cualquier modal anterior
+    actual = getattr(page, "_modal_actual", None)
+    if actual is not None:
+        try:
+            if actual in page.overlay:
+                page.overlay.remove(actual)
+        except Exception:
+            pass
+
+    estado = {"cerrado": False}
+
+    def cerrar():
+        if estado["cerrado"]:
+            return
+        estado["cerrado"] = True
+        ov = getattr(page, "_modal_actual", None)
+        if ov is None:
+            return
+        try:
+            if ov in page.overlay:
+                page.overlay.remove(ov)
+        except Exception:
+            pass
+        try:
+            page._modal_actual = None
+        except Exception:
+            pass
+        try:
+            page.update()
+        except Exception:
+            pass
+        if on_close is not None:
+            # Diferido para que el pop se aplique antes de abrir otro
+            async def _deferred():
+                import asyncio
+                try:
+                    await asyncio.sleep(0.15)
+                except Exception:
+                    pass
+                try:
+                    on_close()
+                except Exception as ex:
+                    print(f"[mostrar_modal] on_close error: {ex}")
+            try:
+                page.run_task(_deferred)
+            except Exception:
+                try:
+                    on_close()
+                except Exception:
+                    pass
+
+    barrier = ft.Container(
+        bgcolor="#80000000",
+        expand=True,
+        on_click=lambda e: cerrar(),
+    )
+
+    # Contenedor del centro: expand=True, sin on_click
+    # Los clicks dentro del contenido van al contenido.
+    # Los clicks fuera (en la zona oscura) van al barrier.
+    centro = ft.Container(
+        content=contenido,
+        alignment=ft.Alignment.CENTER,
+        expand=True,
+    )
+
+    overlay = ft.Stack([barrier, centro], expand=True)
+    try:
+        page.overlay.append(overlay)
+        page._modal_actual = overlay
+        page.update()
+    except Exception as ex:
+        print(f"[mostrar_modal] error al abrir: {ex}")
+
+    return cerrar
+
+

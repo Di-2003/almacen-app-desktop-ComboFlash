@@ -15,7 +15,7 @@ from ui.app import AlmacenApp
 
 
 def main(page: ft.Page):
-    page.title = "Almacén Raidel"
+    page.title = "Almacen"
     page.padding = 0
 
     # ─── SPLASH SCREEN (imagen durante el arranque) ─────────────

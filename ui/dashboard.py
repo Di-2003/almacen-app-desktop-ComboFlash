@@ -1,14 +1,17 @@
 """
-Dashboard con métricas del local. Incluye margen en CUP y USD.
+Dashboard con métricas de período (calendario) y estado actual.
+Todas las tarjetas de stock son tocables: llevan a /lista-productos.
 """
-from datetime import datetime, timedelta
+from datetime import datetime
 import flet as ft
 from db import get_conn, GENERAL_ID
 import inventario as inv
 import locales as loc
+import categorias as cats
+import metricas as met
 from ui import estilos as es
-from ui.componentes import tarjeta_metrica, empty_state, mounted
-from ui.principal import barra_navegacion
+from ui.componentes import tarjeta_metrica, empty_state
+from ui.principal import barra_navegacion, _chip_local
 
 
 def _seccion(titulo):
@@ -29,198 +32,218 @@ def _card(control):
     )
 
 
+def _usd(cup):
+    tasa = inv.get_tasa_usd()
+    return (cup / tasa) if tasa > 0 else 0.0
+
+
 def vista_dashboard(app):
-    sp = _stats_productos(app.local_id)
+    periodo = getattr(app, "periodo_dashboard", "mes")
+    m = met.resumen_periodo(app.local_id, periodo)
+
+    ingresado = m["ingresado"]
+    vendido = m["vendido"]
+    ganancia = m["ganancia"]
+    pct_gan = m["pct_ganancia"]
+    entradas = {"n": m["n_entradas"], "cantidad": m["cant_entradas"]}
+    ventas = {"n": m["n_ventas"], "cantidad": m["cant_ventas"]}
+
+    # ─── Estado del inventario (hoy) ───
     t = inv.totales_local(app.local_id)
-    sm = _stats_movimientos(app.local_id)
-    tc = inv.totales_por_concepto(app.local_id)
-    top = _top_productos(app.local_id)
-    ultimos = _ultimos_movimientos(app.local_id, 8)
-
-    def abrir_lista(filtro):
-        def _hacer(e):
-            _abrir_lista_productos(app, filtro)
-        return _hacer
-
-    grid1 = ft.Row([
-        ft.Container(content=tarjeta_metrica(
-            "Activos", str(sp["total"]), f"{sp['stock_cero']} sin stock",
-            color=es.COLOR_TEXTO_SUAVE,
-            on_tap=abrir_lista("todos")), expand=True),
-        ft.Container(content=tarjeta_metrica(
-            "Stock 0", str(sp["stock_cero"]), "reponer",
-            color=es.COLOR_TEXTO_TENUE,
-            on_tap=abrir_lista("stock_cero")), expand=True),
-    ], spacing=10)
-    grid2 = ft.Row([
-        ft.Container(content=tarjeta_metrica(
-            "En verde", str(sp["verde"]), "saludables",
-            color=es.COLOR_VERDE,
-            on_tap=abrir_lista("verde")), expand=True),
-        ft.Container(content=tarjeta_metrica(
-            "Amarillo", str(sp["amarillo"]), "por revisar",
-            color=es.COLOR_AMARILLO,
-            on_tap=abrir_lista("amarillo")), expand=True),
-    ], spacing=10)
-    grid3 = ft.Row([
-        ft.Container(content=tarjeta_metrica(
-            "Crítico", str(sp["rojo"]), "requiere acción",
-            color=es.COLOR_ROJO,
-            on_tap=abrir_lista("rojo")), expand=True),
-    ], spacing=10)
-
     invertido = t["invertido"]
-    venta = t["venta_total"]
-    margen = t["diferencia"]
-    pct = (margen / invertido * 100) if invertido > 0 else 0.0
-    acento_pct = (es.COLOR_VERDE if pct >= 30
-                  else es.COLOR_AMARILLO if pct >= 15
-                  else es.COLOR_ROJO)
+    venta_pot = t["venta_total"]
+    margen_pot = t["diferencia"]
+    pct_pot = (margen_pot / invertido * 100) if invertido > 0 else 0.0
 
-    # Conversión a USD usando la tasa actual
-    tasa_usd = inv.get_tasa_usd()
-    def usd(cup):
-        return (cup / tasa_usd) if tasa_usd > 0 else 0.0
+    # ─── Stock stats ───
+    sp = _stats_productos(app.local_id)
+    n_inactivos = len(inv.listar_productos_inactivos(app.local_id))
 
-    dinero = ft.Row([
-        ft.Container(content=tarjeta_metrica(
-            "Invertido", f"${invertido:,.2f}",
-            f"≈ USD$ {usd(invertido):,.2f}",
-            color=es.COLOR_TEXTO_SUAVE), expand=True),
-        ft.Container(content=tarjeta_metrica(
-            "Venta", f"${venta:,.2f}",
-            f"≈ USD$ {usd(venta):,.2f}",
-            color=es.COLOR_ACENTO), expand=True),
-    ], spacing=10)
-    dinero2 = ft.Row([
-        ft.Container(content=tarjeta_metrica(
-            "Margen", f"${margen:,.2f}",
-            f"≈ USD$ {usd(margen):,.2f}",
-            color=es.COLOR_ACENTO), expand=True),
-        ft.Container(content=tarjeta_metrica(
-            "% Ganancia", f"{pct:.1f}%",
-            "≥30% OK · 15-30% revisar",
-            color=acento_pct), expand=True),
-    ], spacing=10)
+    # ─── Productos por categoría ───
+    por_cat = cats.contar_productos_por_categoria(app.local_id)
+    cats_activas = cats.listar_categorias(solo_activas=True)
+    sin_cat = por_cat.get(None, 0)
 
-    act = ft.Row([
-        ft.Container(content=tarjeta_metrica(
-            "Hoy", str(sm["hoy"]), "movs",
-            color=es.COLOR_ACENTO), expand=True),
-        ft.Container(content=tarjeta_metrica(
-            "7 días", str(sm["semana"]), "movs",
-            color=es.COLOR_ACENTO), expand=True),
+    # ═══════════ CHIPS DE PERÍODO ═══════════
+    def chip_periodo(texto, valor):
+        activo = (periodo == valor)
+
+        def _click(e):
+            app.periodo_dashboard = valor
+            app.refrescar()
+
+        return ft.Container(
+            content=ft.Text(texto, size=12,
+                            color=(es.COLOR_MARCA_NEGRO if activo
+                                   else es.COLOR_TEXTO_SUAVE),
+                            weight=ft.FontWeight.BOLD),
+            bgcolor=(es.COLOR_ACENTO if activo else es.COLOR_SUPERFICIE),
+            border=ft.Border.all(1,
+                                 es.COLOR_ACENTO if activo
+                                 else es.COLOR_BORDE),
+            padding=ft.Padding.symmetric(horizontal=14, vertical=8),
+            border_radius=20,
+            on_click=_click,
+            ink=True,
+        )
+
+    chips = ft.Row([
+        chip_periodo("Hoy", "hoy"),
+        chip_periodo("Semana", "semana"),
+        chip_periodo("Mes", "mes"),
+        chip_periodo("Año", "anio"),
+        chip_periodo("Total", "total"),
+    ], spacing=6, scroll=ft.ScrollMode.AUTO)
+
+    # ═══════════ SECCIÓN ACTIVIDAD ═══════════
+    def card_dinero(titulo, valor_cup, color):
+        return ft.Container(
+            content=tarjeta_metrica(
+                titulo, f"${valor_cup:,.2f}",
+                f"≈ USD$ {_usd(valor_cup):,.2f}",
+                color=color),
+            expand=True)
+
+    color_pct = (es.COLOR_VERDE if pct_gan >= 30
+                 else es.COLOR_AMARILLO if pct_gan >= 15
+                 else es.COLOR_ROJO)
+    color_pct_pot = (es.COLOR_VERDE if pct_pot >= 30
+                     else es.COLOR_AMARILLO if pct_pot >= 15
+                     else es.COLOR_ROJO)
+
+    act1 = ft.Row([
+        card_dinero("Ingresado", ingresado, es.COLOR_INFO),
+        card_dinero("Vendido", vendido, es.COLOR_EXITO),
     ], spacing=10)
     act2 = ft.Row([
+        card_dinero("Ganancia", ganancia, es.COLOR_ACENTO),
         ft.Container(content=tarjeta_metrica(
-            "30 días", str(sm["mes"]), "movs",
-            color=es.COLOR_ACENTO), expand=True),
-        ft.Container(content=tarjeta_metrica(
-            "Total", str(sm["total"]), "movs",
-            color=es.COLOR_ACENTO), expand=True),
+            "% Ganancia", f"{pct_gan:.1f}%",
+            "≥30% OK · 15-30% revisar",
+            color=color_pct), expand=True),
     ], spacing=10)
-
-    conc1 = ft.Row([
+    act3 = ft.Row([
         ft.Container(content=tarjeta_metrica(
-            "Ventas", str(tc["ventas"]["n"]),
-            f"${tc['ventas']['monto']:,.2f} · "
-            f"≈ USD$ {usd(tc['ventas']['monto']):,.2f}",
-            color=es.COLOR_EXITO), expand=True),
-        ft.Container(content=tarjeta_metrica(
-            "Entradas", str(tc["entradas"]["n"]),
-            f"{inv.fmt_cantidad(tc['entradas']['cantidad'])} u",
+            "Entradas", str(entradas["n"]),
+            f"{inv.fmt_cantidad(entradas['cantidad'])} u",
             color=es.COLOR_INFO), expand=True),
-    ], spacing=10)
-    conc2 = ft.Row([
         ft.Container(content=tarjeta_metrica(
-            "Otras salidas", str(tc["otras_salidas"]["n"]),
-            f"{inv.fmt_cantidad(tc['otras_salidas']['cantidad'])} u",
-            color=es.COLOR_AMBAR), expand=True),
-        ft.Container(content=tarjeta_metrica(
-            "Bajas", str(tc["bajas"]["n"]),
-            f"{inv.fmt_cantidad(tc['bajas']['cantidad'])} u",
-            color=es.COLOR_PELIGRO), expand=True),
+            "Ventas", str(ventas["n"]),
+            f"{inv.fmt_cantidad(ventas['cantidad'])} u",
+            color=es.COLOR_EXITO), expand=True),
     ], spacing=10)
 
-    if top:
-        medallas = ["🥇", "🥈", "🥉", "4.", "5."]
-        max_m = max(d["n"] for d in top) or 1
-        filas = []
-        for i, d in enumerate(top):
-            frac = d["n"] / max_m
-            filas.append(ft.Column([
-                ft.Row([
-                    ft.Text(medallas[i] if i < 3 else f"{i+1}.", size=14),
-                    ft.Text(d["producto"], size=13, expand=True,
-                            max_lines=1,
-                            overflow=ft.TextOverflow.ELLIPSIS,
-                            color=es.COLOR_TEXTO),
-                    ft.Text(str(d["n"]), size=13,
-                            weight=ft.FontWeight.BOLD,
-                            color=es.COLOR_ACENTO),
-                ], spacing=8),
+    # ═══════════ SECCIÓN ESTADO ACTUAL ═══════════
+    est1 = ft.Row([
+        card_dinero("Invertido", invertido, es.COLOR_TEXTO_SUAVE),
+        card_dinero("Venta potencial", venta_pot, es.COLOR_ACENTO),
+    ], spacing=10)
+    est2 = ft.Row([
+        card_dinero("Margen potencial", margen_pot, es.COLOR_ACENTO),
+        ft.Container(content=tarjeta_metrica(
+            "% potencial", f"{pct_pot:.1f}%",
+            "sobre invertido",
+            color=color_pct_pot), expand=True),
+    ], spacing=10)
+
+    # ═══════════ SECCIÓN STOCK (TOCABLES) ═══════════
+    def card_stock(titulo, valor, color, filtro):
+        def _tocar(e):
+            app.abrir_lista(filtro, titulo)
+        return ft.Container(
+            content=ft.Column([
+                ft.Text(titulo, size=11, color=color,
+                        weight=ft.FontWeight.BOLD,
+                        text_align=ft.TextAlign.CENTER),
+                ft.Text(str(valor), size=20,
+                        weight=ft.FontWeight.BOLD,
+                        color=es.COLOR_TEXTO,
+                        text_align=ft.TextAlign.CENTER),
+            ], spacing=2,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=ft.Padding.symmetric(vertical=12),
+            bgcolor=es.COLOR_SUPERFICIE,
+            border=ft.Border.all(1, color),
+            border_radius=12,
+            on_click=_tocar,
+            ink=True,
+            expand=True,
+        )
+
+    stock_row1 = ft.Row([
+        card_stock("Verde", sp["verde"], es.COLOR_VERDE, "verde"),
+        card_stock("Amarillo", sp["amarillo"], es.COLOR_AMARILLO, "amarillo"),
+        card_stock("Crítico", sp["rojo"], es.COLOR_ROJO, "critico"),
+    ], spacing=8)
+    stock_row2 = ft.Row([
+        card_stock("Stock 0", sp["stock_cero"], es.COLOR_TEXTO_TENUE,
+                   "stock0"),
+        card_stock("Inactivos", n_inactivos, es.COLOR_TEXTO_SUAVE,
+                   "inactivos"),
+    ], spacing=8)
+
+    # ═══════════ SECCIÓN POR TIPO ═══════════
+    def card_categoria(nombre, n, cat_id, color=es.COLOR_ACENTO):
+        def _tocar(e):
+            if cat_id is None:
+                app.filtro_tipo = None
+            else:
+                app.filtro_tipo = cat_id
+            app.ir("/principal")
+        return ft.Container(
+            content=ft.Row([
+                ft.Container(width=4, height=30, bgcolor=color,
+                             border_radius=2),
+                ft.Text(nombre, size=13, color=es.COLOR_TEXTO,
+                        expand=True),
                 ft.Container(
-                    content=ft.Container(
-                        width=int(frac * 260), height=4,
-                        bgcolor=es.COLOR_ACENTO, border_radius=2),
-                    bgcolor=es.COLOR_ACENTO_SUAVE,
-                    border_radius=2, height=4),
-            ], spacing=6))
-        contenido_top = ft.Column(filas, spacing=12)
-    else:
-        contenido_top = empty_state(ft.Icons.BAR_CHART, "Sin datos",
-                                     "Sin movimientos en 30 días.")
+                    content=ft.Text(str(n), size=12,
+                                    color=es.COLOR_MARCA_NEGRO,
+                                    weight=ft.FontWeight.BOLD),
+                    bgcolor=es.COLOR_ACENTO,
+                    padding=ft.Padding.symmetric(horizontal=10,
+                                                 vertical=4),
+                    border_radius=12),
+            ], spacing=10,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=ft.Padding.symmetric(horizontal=12, vertical=10),
+            bgcolor=es.COLOR_SUPERFICIE_2,
+            border_radius=10,
+            on_click=_tocar,
+            ink=True,
+        )
 
-    if ultimos:
-        filas_ult = []
-        for d in ultimos:
-            c, ic = _color_tipo(d["tipo"])
-            filas_ult.append(ft.Container(
-                content=ft.Row([
-                    ft.Container(
-                        content=ft.Icon(ic, color="white", size=16),
-                        bgcolor=c, padding=8, border_radius=10),
-                    ft.Column([
-                        ft.Text(d["producto"], size=13,
-                                weight=ft.FontWeight.W_600,
-                                max_lines=1,
-                                overflow=ft.TextOverflow.ELLIPSIS,
-                                color=es.COLOR_TEXTO),
-                        ft.Text(f"{d['fecha'][:10]}  ·  {d['tipo']}",
-                                size=11, color=es.COLOR_TEXTO_SUAVE),
-                    ], spacing=1, expand=True),
-                    ft.Text(inv.fmt_cantidad(d["cantidad"]),
-                            size=13, weight=ft.FontWeight.BOLD,
-                            color=es.COLOR_TEXTO),
-                ], spacing=10,
-                    vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                padding=ft.Padding.symmetric(horizontal=12, vertical=10),
-                bgcolor=es.COLOR_SUPERFICIE_2,
-                border_radius=10))
-        contenido_ult = ft.Column(filas_ult, spacing=8)
+    cat_cards = []
+    for c in cats_activas:
+        n = por_cat.get(c["id"], 0)
+        cat_cards.append(card_categoria(c["nombre"], n, c["id"]))
+    if sin_cat > 0:
+        cat_cards.append(card_categoria("Sin categoría", sin_cat, None,
+                                         es.COLOR_TEXTO_TENUE))
+
+    if cat_cards:
+        contenido_cat = ft.Column(cat_cards, spacing=8)
     else:
-        contenido_ult = empty_state(ft.Icons.HISTORY, "Sin movimientos",
-                                     "Los movimientos aparecerán aquí.")
+        contenido_cat = empty_state(
+            ft.Icons.CATEGORY_OUTLINED, "Sin tipos",
+            "Crea tipos desde el menú lateral.")
 
     contenido = ft.Container(
         content=ft.Column(controls=[
-            _seccion("Estado del inventario"),
-            grid1, grid2, grid3,
+            _seccion("Período"),
+            chips,
             ft.Container(height=12),
-            _seccion("Dinero"),
-            dinero, dinero2,
+            _seccion("Actividad del período"),
+            act1, act2, act3,
             ft.Container(height=12),
-            _seccion("Actividad"),
-            act, act2,
+            _seccion("Estado del inventario (hoy)"),
+            est1, est2,
             ft.Container(height=12),
-            _seccion("Movimientos por concepto"),
-            conc1, conc2,
+            _seccion("Stock (tocables)"),
+            stock_row1, stock_row2,
             ft.Container(height=12),
-            _seccion("Top 5 (30 días)"),
-            _card(contenido_top),
-            ft.Container(height=12),
-            _seccion("Últimos movimientos"),
-            contenido_ult,
+            _seccion("Por tipo de producto"),
+            _card(contenido_cat),
             ft.Container(height=30),
         ], spacing=10, scroll=ft.ScrollMode.AUTO, expand=True),
         padding=ft.Padding.all(14),
@@ -231,26 +254,11 @@ def vista_dashboard(app):
         route="/dashboard",
         controls=[contenido],
         appbar=ft.AppBar(
-            title=ft.Text(
-                f"Métricas — {loc.nombre_local(app.local_id)}",
-                size=15, color=es.COLOR_TEXTO),
+            title=ft.Row([_chip_local(app)], spacing=8),
             bgcolor=es.COLOR_SUPERFICIE, elevation=0),
         navigation_bar=barra_navegacion(app, 1),
         bgcolor=es.COLOR_FONDO,
     )
-
-
-def _color_tipo(tipo):
-    m = {
-        "ENTRADA": (es.COLOR_EXITO, ft.Icons.ADD_CIRCLE),
-        "SALIDA": (es.COLOR_PELIGRO, ft.Icons.REMOVE_CIRCLE),
-        "BAJA": (es.COLOR_TEXTO_SUAVE, ft.Icons.DELETE_OUTLINE),
-        "TRASPASO_SALIDA": (es.COLOR_INFO, ft.Icons.LOGOUT),
-        "TRASPASO_ENTRADA": (es.COLOR_INFO, ft.Icons.LOGIN),
-        "AJUSTE": (es.COLOR_AMBAR, ft.Icons.ATTACH_MONEY),
-        "UMBRAL": (es.COLOR_AMBAR, ft.Icons.TUNE),
-    }
-    return m.get(tipo, (es.COLOR_TEXTO_SUAVE, ft.Icons.CIRCLE))
 
 
 def _stats_productos(local_id):
@@ -270,121 +278,3 @@ def _stats_productos(local_id):
             r += 1
     return {"total": total, "stock_cero": sc,
             "verde": v, "amarillo": a, "rojo": r}
-
-
-def _stats_movimientos(local_id):
-    ahora = datetime.now()
-    hoy = ahora.strftime("%Y-%m-%d 00:00:00")
-    h7 = (ahora - timedelta(days=7)).strftime("%Y-%m-%d 00:00:00")
-    h30 = (ahora - timedelta(days=30)).strftime("%Y-%m-%d 00:00:00")
-    filtro = ""
-    params_base = []
-    if local_id != GENERAL_ID:
-        filtro = " AND local_id=?"
-        params_base = [local_id]
-    with get_conn() as conn:
-        def c(desde=None):
-            sql = ("SELECT COUNT(*) AS n FROM movimientos "
-                   "WHERE tipo IN ('ENTRADA','SALIDA')")
-            params = list(params_base)
-            if desde:
-                sql += " AND fecha >= ?"
-                params.append(desde)
-            sql += filtro
-            return conn.execute(sql, tuple(params)).fetchone()["n"]
-        return {"hoy": c(hoy), "semana": c(h7), "mes": c(h30), "total": c()}
-
-
-def _top_productos(local_id):
-    h30 = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d 00:00:00")
-    filtro = ""
-    params = [h30]
-    if local_id != GENERAL_ID:
-        filtro = " AND m.local_id=?"
-        params.append(local_id)
-    with get_conn() as conn:
-        rows = conn.execute(
-            "SELECT p.nombre AS producto, COUNT(*) AS n "
-            "FROM movimientos m JOIN productos p ON p.id=m.producto_id "
-            "WHERE m.tipo IN ('ENTRADA','SALIDA') AND m.fecha >= ?"
-            + filtro +
-            " GROUP BY p.id ORDER BY n DESC LIMIT 5",
-            tuple(params)).fetchall()
-    return [dict(r) for r in rows]
-
-
-def _ultimos_movimientos(local_id, n):
-    filtro = ""
-    params = []
-    if local_id != GENERAL_ID:
-        filtro = " AND m.local_id=?"
-        params.append(local_id)
-    params.append(n)
-    with get_conn() as conn:
-        rows = conn.execute(
-            "SELECT m.fecha, m.tipo, p.nombre AS producto, "
-            "m.cantidad, m.motivo, m.usuario "
-            "FROM movimientos m JOIN productos p ON p.id=m.producto_id "
-            "WHERE m.tipo IN ('ENTRADA','SALIDA','BAJA',"
-            "                 'TRASPASO_SALIDA','TRASPASO_ENTRADA')"
-            + filtro +
-            " ORDER BY m.fecha DESC, m.id DESC LIMIT ?",
-            tuple(params)).fetchall()
-    return [dict(r) for r in rows]
-
-
-def _abrir_lista_productos(app, filtro):
-    page = app.page
-    if filtro == "todos":
-        productos = inv.listar_productos(app.local_id, solo_activos=True)
-        titulo = "Productos activos"
-    elif filtro == "stock_cero":
-        productos = inv.productos_stock_cero(app.local_id)
-        titulo = "Stock 0"
-    elif filtro == "verde":
-        productos = inv.productos_por_color(app.local_id, "verde")
-        titulo = "En verde"
-    elif filtro == "amarillo":
-        productos = inv.productos_por_color(app.local_id, "amarillo")
-        titulo = "En amarillo"
-    elif filtro == "rojo":
-        productos = inv.productos_por_color(app.local_id, "rojo")
-        titulo = "En crítico"
-    else:
-        return
-    lst = ft.Column(spacing=8, scroll=ft.ScrollMode.AUTO, expand=True)
-    if productos:
-        for p in productos:
-            mc = p.get("moneda_costo") or "CUP"
-            lst.controls.append(ft.Container(
-                content=ft.Column([
-                    ft.Text(p["nombre"], size=14,
-                            weight=ft.FontWeight.W_600,
-                            color=es.COLOR_TEXTO, max_lines=2,
-                            overflow=ft.TextOverflow.ELLIPSIS),
-                    ft.Container(height=4),
-                    ft.Row([
-                        ft.Text(p.get("codigo") or "—", size=11,
-                                color=es.COLOR_ACENTO,
-                                weight=ft.FontWeight.W_600),
-                        ft.Text("·", size=11, color=es.COLOR_TEXTO_TENUE),
-                        ft.Text(f"Stock {inv.fmt_cantidad(p['stock'])}",
-                                size=11, color=es.COLOR_TEXTO_SUAVE),
-                        ft.Text("·", size=11, color=es.COLOR_TEXTO_TENUE),
-                        ft.Text(mc, size=11, color=es.COLOR_TEXTO_TENUE),
-                    ], spacing=6, tight=True),
-                ], spacing=0),
-                padding=12, bgcolor=es.COLOR_SUPERFICIE_2,
-                border_radius=10))
-    else:
-        lst.controls.append(empty_state(ft.Icons.INBOX_OUTLINED,
-                                          "Nada por aquí",
-                                          "No hay productos."))
-    page.show_dialog(ft.AlertDialog(
-        title=ft.Text(f"{titulo}  ({len(productos)})",
-                      size=16, color=es.COLOR_TEXTO),
-        content=ft.Container(content=lst, width=340, expand=True),
-        actions=[ft.TextButton("Cerrar",
-                                on_click=lambda e: page.pop_dialog())],
-        actions_alignment=ft.MainAxisAlignment.END,
-    ))

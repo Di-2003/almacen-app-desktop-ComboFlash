@@ -2,12 +2,12 @@
 Login y primer arranque.
 
 Soporta imágenes opcionales:
-  - recursos/icon.png      → logo (si no existe, usa icono genérico)
-  - recursos/login_bg.png  → fondo del login (si no existe, gradiente)
+  - recursos/icon.png      → logo
+  - recursos/login_bg.png  → fondo del login
   - recursos/signin_bg.png → fondo del primer arranque
 
-Las imágenes se usan automáticamente si están en recursos/. No
-hay que tocar código para agregarlas o cambiarlas.
+El título del login se actualiza al nombre del usuario que se está
+escribiendo: 'Almacen' → 'Almacen Diego'.
 """
 from datetime import datetime
 import flet as ft
@@ -18,7 +18,6 @@ from ui.componentes import snack, ruta_asset, imagen_opcional
 
 
 def _logo(size=160):
-    """Logo principal. Si no existe icon.png, usa ícono genérico."""
     fallback = ft.Container(
         content=ft.Icon(ft.Icons.INVENTORY_2,
                         size=int(size * 0.55),
@@ -34,11 +33,6 @@ def _logo(size=160):
 
 def _fondo_degradado(contenido: ft.Control,
                     imagen_bg: str | None = None) -> ft.Container:
-    """
-    Fondo del login / primer arranque.
-    Si existe la imagen_bg en recursos/, se usa esa imagen.
-    Si no, se usa el gradiente dorado.
-    """
     gradiente = ft.Container(
         expand=True,
         gradient=ft.LinearGradient(
@@ -80,17 +74,28 @@ def _estilo_textfield():
         "label_style": ft.TextStyle(color=es.COLOR_TEXTO_SUAVE),
     }
 
-def _caja_login(titulo: str, subtitulo: str, campos: list,
+
+def _caja_login(titulo, subtitulo: str, campos: list,
                 boton_texto: str, boton_icono, on_click) -> ft.Container:
+    """
+    titulo puede ser str o un ft.Text ya creado (para actualizarlo
+    dinámicamente desde fuera).
+    """
+    if isinstance(titulo, ft.Text):
+        titulo_widget = titulo
+    else:
+        titulo_widget = ft.Text(
+            titulo, size=26, weight=ft.FontWeight.BOLD,
+            text_align=ft.TextAlign.CENTER,
+            color=es.COLOR_TEXTO)
+
     tarjeta = ft.Container(
         content=ft.Column(
             [
                 ft.Row([_logo(160)],
                        alignment=ft.MainAxisAlignment.CENTER),
                 ft.Container(height=6),
-                ft.Text(titulo, size=26, weight=ft.FontWeight.BOLD,
-                        text_align=ft.TextAlign.CENTER,
-                        color=es.COLOR_TEXTO),
+                titulo_widget,
                 ft.Text(subtitulo, size=13,
                         color=es.COLOR_TEXTO_SUAVE,
                         text_align=ft.TextAlign.CENTER),
@@ -126,6 +131,7 @@ def _caja_login(titulo: str, subtitulo: str, campos: list,
 
 
 def vista_primer_arranque(app):
+    """Primer arranque: crear el admin. Título fijo 'Almacen'."""
     page = app.page
     est = _estilo_textfield()
 
@@ -169,7 +175,7 @@ def vista_primer_arranque(app):
         app.ir("/login")
 
     caja = _caja_login(
-        titulo="Bienvenido",
+        titulo="Almacen",
         subtitulo="Crea tu administrador para comenzar",
         campos=[tf_user, tf_pass, tf_pass2],
         boton_texto="Crear administrador",
@@ -185,9 +191,19 @@ def vista_primer_arranque(app):
         horizontal_alignment=ft.CrossAxisAlignment.CENTER,
     )
 
+
 def vista_login(app):
+    """Login normal. El título se vuelve 'Almacen <usuario>' al escribir."""
     page = app.page
     est = _estilo_textfield()
+
+    # Título dinámico (lo actualizamos al vuelo)
+    titulo_login = ft.Text(
+        "Almacen",
+        size=26, weight=ft.FontWeight.BOLD,
+        text_align=ft.TextAlign.CENTER,
+        color=es.COLOR_TEXTO,
+    )
 
     tf_user = ft.TextField(
         label="Usuario", prefix_icon=ft.Icons.PERSON,
@@ -199,6 +215,16 @@ def vista_login(app):
         prefix_icon=ft.Icons.LOCK,
         **est,
     )
+
+    def actualizar_titulo(e=None):
+        u = (tf_user.value or "").strip()
+        titulo_login.value = f"Almacen {u}" if u else "Almacen"
+        try:
+            titulo_login.update()
+        except Exception:
+            pass
+
+    tf_user.on_change = actualizar_titulo
 
     def ingresar(e):
         user = (tf_user.value or "").strip()
@@ -223,7 +249,7 @@ def vista_login(app):
     tf_pass.on_submit = ingresar
 
     caja = _caja_login(
-        titulo="Almacén Raidel",
+        titulo=titulo_login,
         subtitulo="Inicia sesión para continuar",
         campos=[tf_user, tf_pass],
         boton_texto="Ingresar",
