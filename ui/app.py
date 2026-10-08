@@ -1,5 +1,10 @@
+import warnings
+
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", category=UserWarning, module=r"flet\..*")
+
 import flet as ft
-from db import get_conn
+from db import get_conn, get_pref
 import locales as loc
 from ui import estilos as es
 from ui.login import vista_login, vista_primer_arranque
@@ -10,8 +15,16 @@ from ui.perfil import vista_perfil
 from ui.umbrales import vista_umbrales
 from ui.admin_usuarios import vista_usuarios
 from ui.admin_locales import vista_admin_locales
+from ui.admin_categorias import vista_admin_categorias
 from ui.lista_productos import vista_lista_productos
-
+from ui.pos import vista_pos
+from ui.clientes import vista_clientes
+from ui.caja import vista_caja
+from ui.ordenes import vista_ordenes
+from ui.config_negocio import vista_config_negocio
+from ui.paletas import vista_paletas
+from ui.gastos import vista_gastos
+from ui.proveedores import vista_proveedores
 
 class AlmacenApp:
     def __init__(self, page):
@@ -24,8 +37,18 @@ class AlmacenApp:
         self.lista_filtro = "todos"
         self.periodo_dashboard = "mes"
         self._drawer_overlay = None
+        # Carrito POS en memoria (se pierde al cerrar la app)
+        self._carrito_pos = None
 
     def iniciar(self):
+        # Cargar paleta + modo antes de cualquier vista
+        try:
+            paleta = get_pref("paleta") or "dorado"
+            modo = get_pref("tema") or "oscuro"
+        except Exception:
+            paleta, modo = "dorado", "oscuro"
+        es.aplicar_tema(modo=modo, paleta=paleta)
+
         self.page.on_route_change = self._on_route_change
         with get_conn() as conn:
             hay = conn.execute(
@@ -51,6 +74,11 @@ class AlmacenApp:
 
             if ruta == "/principal":
                 self.page.views.append(vista_principal(self))
+            elif ruta == "/pos":
+                if rol not in ("admin", "almacen"):
+                    self.page.views.append(vista_principal(self))
+                else:
+                    self.page.views.append(vista_pos(self))
             elif ruta == "/dashboard":
                 self.page.views.append(vista_dashboard(self))
             elif ruta == "/movimientos":
@@ -59,6 +87,29 @@ class AlmacenApp:
                 self.page.views.append(vista_perfil(self))
             elif ruta == "/lista-productos":
                 self.page.views.append(vista_lista_productos(self))
+            elif ruta == "/clientes":
+                self.page.views.append(vista_clientes(self))
+            elif ruta == "/caja":
+                self.page.views.append(vista_caja(self))
+            elif ruta == "/ordenes":
+                self.page.views.append(vista_ordenes(self))
+            elif ruta == "/gastos":
+                if rol not in ("admin", "almacen"):
+                    self.page.views.append(vista_perfil(self))
+                else:
+                    self.page.views.append(vista_gastos(self))
+            elif ruta == "/proveedores":
+                if rol not in ("admin", "almacen"):
+                    self.page.views.append(vista_perfil(self))
+                else:
+                    self.page.views.append(vista_proveedores(self))
+            elif ruta == "/config-negocio":
+                if rol not in ("admin", "almacen"):
+                    self.page.views.append(vista_perfil(self))
+                else:
+                    self.page.views.append(vista_config_negocio(self))
+            elif ruta == "/paletas":
+                self.page.views.append(vista_paletas(self))
             elif ruta == "/umbrales":
                 if rol not in ("admin", "almacen"):
                     self.page.views.append(vista_perfil(self))
@@ -74,6 +125,11 @@ class AlmacenApp:
                     self.page.views.append(vista_perfil(self))
                 else:
                     self.page.views.append(vista_admin_locales(self))
+            elif ruta == "/admin-categorias":
+                if rol not in ("admin", "almacen"):
+                    self.page.views.append(vista_perfil(self))
+                else:
+                    self.page.views.append(vista_admin_categorias(self))
             else:
                 self.page.views.append(vista_principal(self))
 
@@ -87,13 +143,12 @@ class AlmacenApp:
         from db import GENERAL_ID
         return self.local_id == GENERAL_ID
 
-    # ============ DRAWER (Stack + barrier manual) ============
+    # ============ DRAWER ============
 
     def abrir_drawer(self):
         from ui.drawer import construir_drawer_panel
         self.cerrar_drawer()
 
-        # Panel lateral
         panel_content = construir_drawer_panel(self)
 
         panel = ft.Container(
@@ -103,14 +158,12 @@ class AlmacenApp:
             expand=True,
         )
 
-        # Barrier transparente (captura clicks fuera del panel)
         barrier = ft.Container(
             bgcolor="#90000000",
             expand=True,
             on_click=lambda e: self.cerrar_drawer(),
         )
 
-        # Stack: barrier abajo, panel encima alineado a la izquierda
         overlay = ft.Stack(
             [
                 barrier,
@@ -150,6 +203,9 @@ class AlmacenApp:
     def cambiar_local(self, local_id: int):
         import inventario as inv
         inv.invalidar_cache()
+        # Si hay carrito abierto y cambiamos de local, lo vaciamos
+        if self._carrito_pos and self._carrito_pos["items"]:
+            self._carrito_pos = None
         self.local_id = local_id
         self.filtro = ""
         self.filtro_tipo = None
@@ -179,4 +235,5 @@ class AlmacenApp:
         self.filtro = ""
         self.filtro_tipo = None
         self.periodo_dashboard = "mes"
+        self._carrito_pos = None
         self.ir("/login")

@@ -1,13 +1,14 @@
 """
 Panel lateral (contenido).
 Se usa dentro de un Stack en app.abrir_drawer().
+El drawer ahora es secundario: las acciones principales están
+en Perfil. Aquí solo atajos rápidos.
 """
 import flet as ft
 from ui import estilos as es
 
 
 def construir_drawer_panel(app):
-    """Devuelve el CONTENIDO del panel lateral (Column con header + tiles)."""
     page = app.page
     u = app.usuario
 
@@ -51,20 +52,6 @@ def construir_drawer_panel(app):
         from ui.exportar import exportar_excel
         await exportar_excel(app)
 
-    async def task_importar(e):
-        cerrar()
-        import asyncio
-        await asyncio.sleep(0.12)
-        from ui.exportar import importar_backup
-        await importar_backup(app)
-
-    async def task_backup_destino(e):
-        cerrar()
-        import asyncio
-        await asyncio.sleep(0.12)
-        from ui.exportar import backup_destino
-        await backup_destino(app)
-
     async def task_backup_interno(e):
         cerrar()
         import asyncio
@@ -74,12 +61,6 @@ def construir_drawer_panel(app):
 
     def cb_excel(e):
         page.run_task(task_exportar_excel, e)
-
-    def cb_importar(e):
-        page.run_task(task_importar, e)
-
-    def cb_backup_destino(e):
-        page.run_task(task_backup_destino, e)
 
     def cb_backup_interno(e):
         page.run_task(task_backup_interno, e)
@@ -122,12 +103,30 @@ def construir_drawer_panel(app):
         )
 
     tiles = []
+
+    # ── Atajos rápidos ──
+    tiles.append(tile(ft.Icons.HOME, "Inicio",
+                      ir_a("/principal")))
+    if rol in ("admin", "almacen"):
+        tiles.append(tile(ft.Icons.POINT_OF_SALE, "Nueva venta (POS)",
+                          ir_a("/pos"), color=es.COLOR_EXITO))
+    tiles.append(tile(ft.Icons.RECEIPT_LONG, "Órdenes de venta",
+                      ir_a("/ordenes"), color=es.COLOR_AMBAR))
+    tiles.append(tile(ft.Icons.PEOPLE_OUTLINE, "Clientes",
+                      ir_a("/clientes"), color=es.COLOR_INFO))
+    tiles.append(tile(ft.Icons.LOCK_CLOCK, "Caja",
+                      ir_a("/caja"), color=es.COLOR_ACENTO))
+
+    tiles.append(ft.Divider(height=1, color=es.COLOR_BORDE))
+
+    # ── Administración ──
     if rol in ("admin", "almacen"):
         tiles.append(tile(ft.Icons.CATEGORY, "Tipos de producto",
                           abrir_tipos, color=es.COLOR_INFO))
-
-    tiles.append(tile(ft.Icons.TUNE, "Umbrales de colores",
-                      ir_a("/umbrales"), color=es.COLOR_AMBAR))
+        tiles.append(tile(ft.Icons.TUNE, "Umbrales de colores",
+                          ir_a("/umbrales"), color=es.COLOR_AMBAR))
+        tiles.append(tile(ft.Icons.STORE, "Datos del negocio",
+                          ir_a("/config-negocio"), color=es.COLOR_EXITO))
 
     if rol == "admin":
         tiles.append(tile(ft.Icons.STOREFRONT, "Administrar locales",
@@ -135,30 +134,27 @@ def construir_drawer_panel(app):
         tiles.append(tile(ft.Icons.PEOPLE, "Gestionar usuarios",
                           ir_a("/usuarios"), color=es.COLOR_PELIGRO))
 
+    tiles.append(ft.Divider(height=1, color=es.COLOR_BORDE))
+
+    # ── Datos ──
     if rol in ("admin", "almacen"):
-        tiles += [
-            ft.Divider(height=1, color=es.COLOR_BORDE),
-            tile(ft.Icons.TABLE_CHART, "Exportar Excel", cb_excel,
-                 color=es.COLOR_EXITO),
-            tile(ft.Icons.UPLOAD, "Importar copia", cb_importar,
-                 color=es.COLOR_AMBAR),
-            tile(ft.Icons.FOLDER_OPEN, "Carpeta de backup",
-                 cb_backup_destino, color=es.COLOR_INFO),
-            tile(ft.Icons.SAVE, "Hacer backup", cb_backup_interno),
-        ]
+        tiles.append(tile(ft.Icons.TABLE_CHART, "Exportar Excel",
+                          cb_excel, color=es.COLOR_EXITO))
+        tiles.append(tile(ft.Icons.SAVE, "Hacer backup rápido",
+                          cb_backup_interno))
 
-    tiles += [
-        ft.Divider(height=1, color=es.COLOR_BORDE),
-        tile(ft.Icons.LOGOUT, "Cerrar sesión", cerrar_sesion,
-             color=es.COLOR_PELIGRO),
-    ]
+    tiles.append(ft.Divider(height=1, color=es.COLOR_BORDE))
 
-    # Column con header + lista scrollable
+    # ── Sesión ──
+    tiles.append(tile(ft.Icons.LOGOUT, "Cerrar sesión", cerrar_sesion,
+                    color=es.COLOR_PELIGRO))
+
     return ft.Column(
         [
             header,
             ft.Container(
-                content=ft.Column(tiles, spacing=0),
+                content=ft.Column(tiles, spacing=0,
+                                scroll=ft.ScrollMode.AUTO),
                 expand=True,
                 padding=ft.Padding.only(bottom=20),
             ),

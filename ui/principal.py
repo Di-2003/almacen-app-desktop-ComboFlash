@@ -16,8 +16,10 @@ PASO_PAGINACION = 30
 
 
 def barra_navegacion(app, indice):
+    """Barra inferior de 5 botones: Inicio · POS · Métricas · Historial · Perfil."""
     def cambiar(e):
-        rutas = ["/principal", "/dashboard", "/movimientos", "/perfil"]
+        rutas = ["/principal", "/pos", "/dashboard",
+                 "/movimientos", "/perfil"]
         app.ir(rutas[e.control.selected_index])
 
     return ft.NavigationBar(
@@ -29,23 +31,23 @@ def barra_navegacion(app, indice):
             ft.NavigationBarDestination(
                 icon=ft.Icons.HOME_OUTLINED,
                 selected_icon=ft.Icons.HOME,
-                label="Inicio",
-            ),
+                label="Inicio"),
+            ft.NavigationBarDestination(
+                icon=ft.Icons.POINT_OF_SALE_OUTLINED,
+                selected_icon=ft.Icons.POINT_OF_SALE,
+                label="POS"),
             ft.NavigationBarDestination(
                 icon=ft.Icons.BAR_CHART_OUTLINED,
                 selected_icon=ft.Icons.BAR_CHART,
-                label="Métricas",
-            ),
+                label="Métricas"),
             ft.NavigationBarDestination(
                 icon=ft.Icons.HISTORY_OUTLINED,
                 selected_icon=ft.Icons.HISTORY,
-                label="Historial",
-            ),
+                label="Historial"),
             ft.NavigationBarDestination(
                 icon=ft.Icons.PERSON_OUTLINE,
                 selected_icon=ft.Icons.PERSON,
-                label="Perfil",
-            ),
+                label="Perfil"),
         ],
         on_change=cambiar,
     )
@@ -244,14 +246,12 @@ def _abrir_selector_tipo(app):
 
         def crear_nueva(e):
             cerrar_actual()
-            _dlg_nueva_categoria_inicio(
-                app, on_creada=app.refrescar)
+            _dlg_nueva_categoria_inicio(app, on_creada=app.refrescar)
 
         def abrir_acciones(cat):
             def _hacer(e):
                 cerrar_actual()
-                _menu_acciones_categoria(app, cat,
-                                          on_done=app.refrescar)
+                _menu_acciones_categoria(app, cat, on_done=app.refrescar)
             return _hacer
 
         rol = app.usuario["rol"]
@@ -626,7 +626,6 @@ def vista_principal(app):
     contenedor_resumen = ft.Container()
     lista_cont = ft.Column(spacing=10, scroll=ft.ScrollMode.AUTO,
                             expand=True)
-    # Estado de paginación (persistido en closure)
     estado = {"visibles": PASO_PAGINACION}
 
     def refrescar():
@@ -675,9 +674,7 @@ def vista_principal(app):
                         f"({restantes} restantes)",
                         icon=ft.Icons.EXPAND_MORE,
                         on_click=cargar_mas,
-                        style=ft.ButtonStyle(
-                            color=es.COLOR_ACENTO),
-                    ),
+                        style=ft.ButtonStyle(color=es.COLOR_ACENTO)),
                     alignment=ft.Alignment.CENTER,
                     padding=20,
                 ))
@@ -686,8 +683,7 @@ def vista_principal(app):
             n_rojo = sum(1 for p in productos
                          if inv.color_de_producto(p) == "rojo")
             contenedor_resumen.content = _tarjeta_resumen(
-                t["invertido"], total_filtrado, n_rojo
-            )
+                t["invertido"], total_filtrado, n_rojo)
 
             if mounted(lista_cont):
                 lista_cont.update()
@@ -700,7 +696,7 @@ def vista_principal(app):
 
     def on_search(e):
         app.filtro = (e.control.value or "").lower()
-        estado["visibles"] = PASO_PAGINACION  # resetear paginación
+        estado["visibles"] = PASO_PAGINACION
         refrescar()
 
     cap = campo_busqueda(
@@ -764,6 +760,17 @@ def vista_principal(app):
 
     nombre_usuario = app.usuario["username"] if app.usuario else ""
 
+    # FAB: acceso rápido al POS cuando el usuario puede vender
+    fab = None
+    if puede_operar:
+        fab = ft.FloatingActionButton(
+            icon=ft.Icons.POINT_OF_SALE,
+            bgcolor=es.COLOR_ACENTO,
+            foreground_color="#ffffff",
+            tooltip="Nueva venta (POS)",
+            on_click=lambda e: app.ir("/pos"),
+        )
+
     return ft.View(
         route="/principal",
         controls=[
@@ -792,6 +799,7 @@ def vista_principal(app):
                 ),
             ],
         ),
+        floating_action_button=fab,
         navigation_bar=barra_navegacion(app, 0),
         bgcolor=es.COLOR_FONDO,
     )

@@ -2,22 +2,20 @@
 Dashboard con métricas de período (calendario) y estado actual.
 Todas las tarjetas de stock son tocables: llevan a /lista-productos.
 """
-from datetime import datetime
 import flet as ft
-from db import get_conn, GENERAL_ID
 import inventario as inv
-import locales as loc
 import categorias as cats
 import metricas as met
+import gastos as gs
 from ui import estilos as es
 from ui.componentes import tarjeta_metrica, empty_state
 from ui.principal import barra_navegacion, _chip_local
-
+import gastos as gs
 
 def _seccion(titulo):
     return ft.Row([
         ft.Container(width=4, height=18, bgcolor=es.COLOR_ACENTO,
-                     border_radius=2),
+                    border_radius=2),
         ft.Text(titulo, size=14, weight=ft.FontWeight.BOLD,
                 color=es.COLOR_TEXTO),
     ], spacing=8)
@@ -48,6 +46,15 @@ def vista_dashboard(app):
     entradas = {"n": m["n_entradas"], "cantidad": m["cant_entradas"]}
     ventas = {"n": m["n_ventas"], "cantidad": m["cant_ventas"]}
 
+    # ─── Gastos del período ───
+    desde, hasta = met.rango_calendario(periodo)
+    li = app.local_id
+    li_arg = "__all__" if li == -1 else li
+    gastos_periodo = gs.total_gastos_periodo(
+        local_id=li_arg, desde=desde, hasta=hasta)
+    utilidad_neta = ganancia - gastos_periodo
+    pct_utilidad = (utilidad_neta / vendido * 100) if vendido > 0 else 0.0
+    
     # ─── Estado del inventario (hoy) ───
     t = inv.totales_local(app.local_id)
     invertido = t["invertido"]
@@ -115,12 +122,23 @@ def vista_dashboard(app):
         card_dinero("Ingresado", ingresado, es.COLOR_INFO),
         card_dinero("Vendido", vendido, es.COLOR_EXITO),
     ], spacing=10)
+    color_utilidad = (es.COLOR_VERDE if utilidad_neta > 0
+                      else es.COLOR_PELIGRO if utilidad_neta < 0
+                      else es.COLOR_AMARILLO)
     act2 = ft.Row([
         card_dinero("Ganancia", ganancia, es.COLOR_ACENTO),
         ft.Container(content=tarjeta_metrica(
             "% Ganancia", f"{pct_gan:.1f}%",
             "≥30% OK · 15-30% revisar",
             color=color_pct), expand=True),
+    ], spacing=10)
+    act2b = ft.Row([
+        card_dinero("Gastos del período", gastos_periodo,
+                    es.COLOR_PELIGRO),
+        ft.Container(content=tarjeta_metrica(
+            "Utilidad neta", f"${utilidad_neta:,.2f}",
+            f"{pct_utilidad:.1f}% de lo vendido",
+            color=color_utilidad), expand=True),
     ], spacing=10)
     act3 = ft.Row([
         ft.Container(content=tarjeta_metrica(
@@ -234,7 +252,7 @@ def vista_dashboard(app):
             chips,
             ft.Container(height=12),
             _seccion("Actividad del período"),
-            act1, act2, act3,
+            act1, act2, act2b, act3,
             ft.Container(height=12),
             _seccion("Estado del inventario (hoy)"),
             est1, est2,
@@ -256,7 +274,7 @@ def vista_dashboard(app):
         appbar=ft.AppBar(
             title=ft.Row([_chip_local(app)], spacing=8),
             bgcolor=es.COLOR_SUPERFICIE, elevation=0),
-        navigation_bar=barra_navegacion(app, 1),
+        navigation_bar=barra_navegacion(app, 2),
         bgcolor=es.COLOR_FONDO,
     )
 

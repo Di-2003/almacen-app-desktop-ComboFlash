@@ -219,7 +219,7 @@ def vista_movimientos(app):
             bgcolor=es.COLOR_SUPERFICIE,
             elevation=0,
         ),
-        navigation_bar=barra_navegacion(app, 2),
+        navigation_bar=barra_navegacion(app, 3),
         bgcolor=es.COLOR_FONDO,
     )
 
@@ -267,7 +267,8 @@ def _detalle_movimiento(app, mv, on_refresh):
                 ft.Text("Editar movimiento", size=14,
                         color=es.COLOR_MARCA_NEGRO,
                         weight=ft.FontWeight.W_600),
-            ], spacing=10),
+            ], spacing=10,
+                alignment=ft.MainAxisAlignment.CENTER),
             padding=ft.Padding.symmetric(vertical=14),
             bgcolor=es.COLOR_ACENTO,
             border_radius=12,

@@ -1149,10 +1149,18 @@ def renombrar_producto(producto_id, nombre_nuevo, usuario):
             raise ValueError(
                 f"Ya existe un producto «{nombre_nuevo}» en "
                 f"«{otro['local_nombre']}». Usa un nombre distinto.")
+        try:
+            conn.execute(
+                "UPDATE producto_proveedores SET producto_nombre=? "
+                "WHERE producto_nombre=? COLLATE NOCASE",
+                (nombre_nuevo, nombre_actual),
+            )
+        except Exception:
+            pass
         conn.execute(
-            "UPDATE productos SET nombre=?, fecha_ultima_mod=? "
-            "WHERE nombre=? COLLATE NOCASE",
-            (nombre_nuevo, fecha, nombre_actual),
+            "UPDATE producto_proveedores SET producto_nombre=? "
+            "WHERE producto_nombre=? COLLATE NOCASE",
+            (nombre_nuevo, nombre_actual),
         )
         conn.execute(
             "INSERT INTO movimientos(local_id,producto_id,tipo,cantidad,"

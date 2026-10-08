@@ -1,7 +1,7 @@
 """
 Perfil de usuario + configuración + administración + datos.
-Incluye selector de moneda de visualización y recálculo automático
-de precios al cambiar las tasas.
+Incluye accesos a POS, Clientes, Caja, Órdenes, Paletas y
+Configuración del negocio.
 """
 import flet as ft
 import inventario as inv
@@ -123,7 +123,7 @@ def vista_perfil(app):
             inv.set_config("tema", nuevo)
         except Exception:
             pass
-        es.aplicar_tema(nuevo)
+        es.aplicar_tema(modo=nuevo, paleta=es.paleta_actual())
         page.theme_mode = (ft.ThemeMode.DARK if nuevo == "oscuro"
                         else ft.ThemeMode.LIGHT)
         page.bgcolor = es.COLOR_FONDO
@@ -179,66 +179,115 @@ def vista_perfil(app):
 
     sub_usd = _subtitulo_tasa("tasa_usd", "USD")
     sub_eur = _subtitulo_tasa("tasa_eur", "EUR")
-    sub_mon= f"Ver precios en {inv.get_moneda_visualizacion()}"
+    sub_mon = f"Ver precios en {inv.get_moneda_visualizacion()}"
 
     bloques = [
         header,
         ft.Container(height=20),
         _seccion_label("Cuenta"),
         _tile(ft.Icons.EDIT, "Editar perfil",
-            "Cambiar usuario o contraseña", abrir_perfil,
-            color=es.COLOR_INFO),
+              "Cambiar usuario o contraseña", abrir_perfil,
+              color=es.COLOR_INFO),
+    ]
+
+    # ── Configuración ──
+    bloques += [
         ft.Container(height=16),
         _seccion_label("Configuración"),
         _tile_switch(ft.Icons.DARK_MODE, "Modo oscuro",
-                    "Alternar entre tema claro y oscuro",
-                    es.es_oscuro(), toggle_tema, color="#8b5cf6"),
+                     "Alternar entre tema claro y oscuro",
+                     es.es_oscuro(), toggle_tema, color="#8b5cf6"),
+        _tile(ft.Icons.PALETTE, "Apariencia",
+              "Paleta de colores y modo claro/oscuro",
+              lambda e: app.ir("/paletas"),
+              color="#a855f7"),
         _tile(ft.Icons.VISIBILITY, "Moneda de visualización",
-            sub_mon, configurar_moneda_visualizacion,
-            color=es.COLOR_INFO),
+              sub_mon, configurar_moneda_visualizacion,
+              color=es.COLOR_INFO),
         _tile(ft.Icons.ATTACH_MONEY, "Tasa de cambio USD",
-            sub_usd, configurar_tasa_usd, color=es.COLOR_AMBAR),
+              sub_usd, configurar_tasa_usd, color=es.COLOR_AMBAR),
         _tile(ft.Icons.EURO_SYMBOL, "Tasa de cambio EUR",
-            sub_eur, configurar_tasa_eur, color=es.COLOR_AMBAR),
+              sub_eur, configurar_tasa_eur, color=es.COLOR_AMBAR),
+        _tile(ft.Icons.STORE, "Datos del negocio",
+              "Nombre, dirección y métodos de pago para tickets",
+              lambda e: app.ir("/config-negocio"),
+              color=es.COLOR_EXITO),
     ]
 
+       # ── Ventas y caja (admin/almacén) ──
     if u["rol"] in ("admin", "almacen"):
         bloques += [
-            ft.Container(height=8),
-            _tile(ft.Icons.CATEGORY, "Tipos de producto",
-                "Crear, renombrar o desactivar tipos",
-                lambda e: app.ir("/admin-categorias"),
-                color=es.COLOR_INFO),
+            ft.Container(height=16),
+            _seccion_label("Ventas y caja"),
+            _tile(ft.Icons.POINT_OF_SALE, "Punto de venta (POS)",
+                  "Nueva venta, carrito y cobro",
+                  lambda e: app.ir("/pos"),
+                  color=es.COLOR_EXITO),
+            _tile(ft.Icons.PEOPLE_OUTLINE, "Clientes",
+                  "CRUD de clientes y cuentas por cobrar",
+                  lambda e: app.ir("/clientes"),
+                  color=es.COLOR_INFO),
+            _tile(ft.Icons.RECEIPT_LONG, "Órdenes de venta",
+                  "Historial de ventas del POS",
+                  lambda e: app.ir("/ordenes"),
+                  color=es.COLOR_AMBAR),
+            _tile(ft.Icons.LOCK_CLOCK, "Caja",
+                  "Sesiones y cuadre de efectivo",
+                  lambda e: app.ir("/caja"),
+                  color=es.COLOR_ACENTO),
+            _tile(ft.Icons.STOREFRONT, "Proveedores",
+                  "CRUD + cuentas por pagar + productos",
+                  lambda e: app.ir("/proveedores"),
+                  color="#0891b2"),
+            _tile(ft.Icons.PAYMENTS, "Gastos operativos",
+                  "Luz, agua, alquiler, salarios, otros",
+                  lambda e: app.ir("/gastos"),
+                  color=es.COLOR_PELIGRO),
         ]
 
+    # ── Administración ──
     if u["rol"] == "admin":
         bloques += [
             ft.Container(height=16),
             _seccion_label("Administración"),
+            _tile(ft.Icons.CATEGORY, "Tipos de producto",
+                  "Crear, renombrar o desactivar tipos",
+                  lambda e: app.ir("/admin-categorias"),
+                  color=es.COLOR_INFO),
             _tile(ft.Icons.STOREFRONT, "Administrar locales",
-                "Abrir, renombrar o cerrar tiendas",
-                abrir_locales, color=es.COLOR_ACENTO),
+                  "Abrir, renombrar o cerrar tiendas",
+                  abrir_locales, color=es.COLOR_ACENTO),
             _tile(ft.Icons.PEOPLE, "Gestionar usuarios",
-                "Crear, editar o eliminar usuarios",
-                abrir_usuarios, color=es.COLOR_PELIGRO),
+                  "Crear, editar o eliminar usuarios",
+                  abrir_usuarios, color=es.COLOR_PELIGRO),
+        ]
+    elif u["rol"] == "almacen":
+        bloques += [
+            ft.Container(height=16),
+            _seccion_label("Administración"),
+            _tile(ft.Icons.CATEGORY, "Tipos de producto",
+                  "Crear, renombrar o desactivar tipos",
+                  lambda e: app.ir("/admin-categorias"),
+                  color=es.COLOR_INFO),
         ]
 
+    # ── Datos ──
     if u["rol"] in ("admin", "almacen"):
         bloques += [
             ft.Container(height=16),
             _seccion_label("Datos"),
             _tile(ft.Icons.TABLE_CHART, "Exportar Excel",
-                "Genera el libro completo con todos los locales",
-                cb_exportar_excel, color=es.COLOR_EXITO),
+                  "Genera el libro completo con todos los locales",
+                  cb_exportar_excel, color=es.COLOR_EXITO),
             _tile(ft.Icons.UPLOAD, "Importar copia de seguridad",
-                "Reemplaza la BD actual con un archivo .db",
-                cb_importar_backup, color=es.COLOR_AMBAR),
+                  "Reemplaza la BD actual con un archivo .db",
+                  cb_importar_backup, color=es.COLOR_AMBAR),
             _tile(ft.Icons.FOLDER_OPEN, "Backup Destino",
-                "Elige carpeta destino de backup",
-                cb_backup_destino, color=es.COLOR_INFO),
+                  "Elige carpeta destino de backup",
+                  cb_backup_destino, color=es.COLOR_INFO),
             _tile(ft.Icons.SAVE, "Backup Interno",
-                "Backup en la carpeta destino",
-                cb_backup_interno, color=es.COLOR_ACENTO),
+                  "Backup en la carpeta destino",
+                  cb_backup_interno, color=es.COLOR_ACENTO),
         ]
 
     bloques += [
@@ -256,7 +305,7 @@ def vista_perfil(app):
 
     contenido = ft.Container(
         content=ft.Column(controls=bloques, spacing=8,
-                        scroll=ft.ScrollMode.AUTO, expand=True),
+                          scroll=ft.ScrollMode.AUTO, expand=True),
         padding=ft.Padding.all(16), expand=True)
 
     return ft.View(
@@ -264,7 +313,7 @@ def vista_perfil(app):
         appbar=ft.AppBar(
             title=ft.Text("Mi perfil", size=16, color=es.COLOR_TEXTO),
             bgcolor=es.COLOR_SUPERFICIE, elevation=0),
-        navigation_bar=barra_navegacion(app, 3),
+        navigation_bar=barra_navegacion(app, 4),
         bgcolor=es.COLOR_FONDO)
 
 
@@ -274,7 +323,7 @@ def _dlg_tasa(app, clave, titulo, label, moneda):
     page = app.page
     actual = _fmt_num(inv.get_config(clave) or "1")
     tf = ft.TextField(label=label, value=actual,
-                    keyboard_type=ft.KeyboardType.NUMBER,
+                      keyboard_type=ft.KeyboardType.NUMBER,
                       **es.estilo_textfield(12), height=54)
     error_lbl = ft.Text("", color=es.COLOR_PELIGRO, size=12)
     dlg_ref = {"dlg": None}
@@ -291,14 +340,12 @@ def _dlg_tasa(app, clave, titulo, label, moneda):
             return
 
         inv.set_config(clave, str(valor))
-
-        # FASE 2: recalcular TODOS los precios en USD/EUR
         n = inv.recalcular_todos_los_precios()
 
         def _despues():
             snack(page,
-                f"1 {moneda} = {_fmt_num(valor)} CUP. "
-                f"{n} producto(s) actualizados.", "ok")
+                  f"1 {moneda} = {_fmt_num(valor)} CUP. "
+                  f"{n} producto(s) actualizados.", "ok")
             app.refrescar()
 
         cerrar_dialogo(page, dlg_ref["dlg"], on_close=_despues)
@@ -389,7 +436,7 @@ def _modal_editar_perfil(app):
                         password=True, can_reveal_password=True,
                         **es.estilo_textfield(12), height=54)
     tf_n2 = ft.TextField(label="Repetir nueva", password=True,
-                        can_reveal_password=True,
+                         can_reveal_password=True,
                          **es.estilo_textfield(12), height=54)
     error_lbl = ft.Text("", color=es.COLOR_PELIGRO, size=12)
     dlg_ref = {"dlg": None}
@@ -426,8 +473,8 @@ def _modal_editar_perfil(app):
     dlg = ft.AlertDialog(
         title=ft.Text("Editar perfil"),
         content=ft.Column([tf_u, tf_a, tf_n, tf_n2, error_lbl],
-                        tight=True, width=320, spacing=10,
-                        scroll=ft.ScrollMode.AUTO),
+                          tight=True, width=320, spacing=10,
+                          scroll=ft.ScrollMode.AUTO),
         actions=[
             ft.TextButton("Cancelar", on_click=cancelar),
             ft.FilledButton("Guardar", on_click=guardar,

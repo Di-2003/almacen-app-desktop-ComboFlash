@@ -1,20 +1,21 @@
 """
-Diálogos. Incluye moneda original, promedio ponderado, categoría.
+Diálogos. Incluye moneda original, promedio ponderado, categoría,
+flag de granel.
 Autocompletado cruzado nombre↔código en entrada, salida y traspaso.
-Creación de categoría INLINE (sin diálogo anidado, que Flet no permite).
+Creación de categoría INLINE (sin diálogo anidado).
 """
 from datetime import datetime
 import flet as ft
 import inventario as inv
 import locales as loc
 import categorias as cats
-from db import GENERAL_ID
+from db import get_conn, GENERAL_ID
 from ui import estilos as es
 from ui.componentes import (
     chip_estado, chip_inactivo, snack, caja_info, bottom_sheet,
     cursor_al_final, cerrar_dialogo,
 )
-
+import proveedores as pv
 
 def _mensaje_movimiento(info, accion, delta):
     c_antes = info["color_antes"]
@@ -67,6 +68,8 @@ def abrir_detalle_producto(app, prod, on_refresh=None):
         if c:
             cat_nombre = c["nombre"]
 
+    es_granel = bool(prod.get("es_granel", 0))
+
     cabecera = ft.Row([
         ft.Column([
             ft.Text(prod["nombre"], size=17, weight=ft.FontWeight.BOLD,
@@ -74,7 +77,8 @@ def abrir_detalle_producto(app, prod, on_refresh=None):
                     overflow=ft.TextOverflow.ELLIPSIS),
             ft.Text(prod.get("codigo") or "—", size=11,
                     color=es.COLOR_TEXTO_SUAVE),
-            ft.Text(cat_nombre, size=11, color=es.COLOR_ACENTO),
+            ft.Text(cat_nombre + ("  ·  Granel" if es_granel else ""),
+                    size=11, color=es.COLOR_ACENTO),
             ft.Text(prod.get("fecha_ultima_mod") or "", size=10,
                     color=es.COLOR_TEXTO_TENUE),
         ], spacing=1, expand=True),
@@ -91,8 +95,9 @@ def abrir_detalle_producto(app, prod, on_refresh=None):
         if sub:
             hijos.append(ft.Text(sub, size=10, color=es.COLOR_ACENTO))
         return ft.Container(
-            content=ft.Column(hijos, spacing=2,
-                              horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+            content=ft.Column(
+                hijos, spacing=2,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER),
             padding=ft.Padding.symmetric(horizontal=12, vertical=8),
             bgcolor=es.COLOR_SUPERFICIE_2,
             border_radius=10, expand=True,
@@ -131,7 +136,8 @@ def abrir_detalle_producto(app, prod, on_refresh=None):
                     ft.Icon(ft.Icons.RESTORE, color="white", size=20),
                     ft.Text("Reactivar producto", size=14,
                             color="white", weight=ft.FontWeight.W_600),
-                ], spacing=10, alignment=ft.MainAxisAlignment.CENTER),
+                ], spacing=10,
+                    alignment=ft.MainAxisAlignment.CENTER),
                 padding=ft.Padding.symmetric(vertical=14),
                 bgcolor=es.COLOR_EXITO, border_radius=12,
                 on_click=reactivar, ink=True,
@@ -149,6 +155,12 @@ def abrir_detalle_producto(app, prod, on_refresh=None):
         def sal(e):
             cerrar_dialogo(page)
             modal_salida(app, producto=prod, on_refresh=on_refresh)
+        def prov(e):
+            cerrar_dialogo(page)
+            from ui.producto_proveedores import (
+                abrir_proveedores_producto,
+            )
+            abrir_proveedores_producto(app, prod, on_refresh=on_refresh)
         def trasp(e):
             cerrar_dialogo(page)
             modal_traspaso(app, producto=prod, on_refresh=on_refresh)
@@ -173,6 +185,19 @@ def abrir_detalle_producto(app, prod, on_refresh=None):
         def baja(e):
             cerrar_dialogo(page)
             _conf_baja(app, prod, on_refresh)
+        def toggle_granel(e):
+            try:
+                with get_conn() as conn:
+                    conn.execute(
+                        "UPDATE productos SET es_granel=? "
+                        "WHERE nombre=? COLLATE NOCASE",
+                        (1 if e.control.value else 0, prod["nombre"]))
+                inv.invalidar_cache()
+                snack(page, "Granel actualizado (propagado)", "ok")
+                if on_refresh:
+                    on_refresh()
+            except Exception as ex:
+                snack(page, str(ex), "error")
 
         contenido += [
             ft.Container(height=6),
@@ -182,7 +207,8 @@ def abrir_detalle_producto(app, prod, on_refresh=None):
                 _tile(ft.Icons.SWAP_HORIZ, es.COLOR_INFO, "Traspaso", trasp),
             ], spacing=8),
             ft.Row([
-                _tile(ft.Icons.ATTACH_MONEY, es.COLOR_AMBAR, "P. Costo", pr_costo),
+                _tile(ft.Icons.ATTACH_MONEY, es.COLOR_AMBAR,
+                      "P. Costo", pr_costo),
                 _tile(ft.Icons.SELL, es.COLOR_ACENTO, "P. Venta", pr_venta),
                 _tile(ft.Icons.TAG, es.COLOR_ACENTO, "Código", cod),
             ], spacing=8),
@@ -191,6 +217,28 @@ def abrir_detalle_producto(app, prod, on_refresh=None):
                 _tile(ft.Icons.CATEGORY, es.COLOR_INFO, "Tipo", cat),
                 _tile(ft.Icons.TUNE, es.COLOR_AMBAR, "Umbrales", umb),
             ], spacing=8),
+            ft.Row([
+                _tile(ft.Icons.STOREFRONT, "#0891b2",
+                      "Proveedores", prov),
+                ft.Container(expand=True),
+                ft.Container(expand=True),
+            ], spacing=8),
+            ft.Container(height=4),
+            ft.Container(
+                content=ft.Row([
+                    ft.Icon(ft.Icons.SCALE, color=es.COLOR_ACENTO,
+                            size=18),
+                    ft.Text("Se vende a granel (kg, litros)", size=13,
+                            color=es.COLOR_TEXTO, expand=True),
+                    ft.Switch(value=es_granel,
+                              active_color=es.COLOR_ACENTO,
+                              on_change=toggle_granel),
+                ], spacing=10,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                padding=ft.Padding.symmetric(horizontal=12, vertical=6),
+                bgcolor=es.COLOR_SUPERFICIE_2,
+                border_radius=10,
+            ),
             ft.Container(height=2),
             ft.Container(
                 content=ft.Row([
@@ -199,7 +247,8 @@ def abrir_detalle_producto(app, prod, on_refresh=None):
                     ft.Text("Dar de baja", size=12,
                             color=es.COLOR_PELIGRO,
                             weight=ft.FontWeight.W_600),
-                ], spacing=8, alignment=ft.MainAxisAlignment.CENTER),
+                ], spacing=8,
+                    alignment=ft.MainAxisAlignment.CENTER),
                 padding=ft.Padding.symmetric(vertical=10),
                 bgcolor=es.COLOR_PELIGRO_SUAVE,
                 border_radius=10,
@@ -238,16 +287,7 @@ def _tile(icono, color_bg, label, on_click):
 
 # ============ widget reutilizable: dropdown + crear inline ============
 
-def _construir_selector_categoria(cat_default_id, on_cambio):
-    """
-    Devuelve (dd, bloque_nueva, contenedor).
-      - dd: Dropdown de categoría (sin opción especial)
-      - bloque_nueva: Row con TextField + botón ✓ (oculto inicialmente)
-      - contenedor: Column con [dd, btn_nueva, bloque_nueva]
-    El botón "+ Nuevo tipo" muestra bloque_nueva.
-    Al guardar, crea la categoría, actualiza las opciones del dd y
-    selecciona la nueva.
-    """
+def _construir_selector_categoria(cat_default_id, on_cambio=None):
     cat_default = ""
     if cat_default_id:
         cat_default = str(cat_default_id)
@@ -315,7 +355,6 @@ def _construir_selector_categoria(cat_default_id, on_cambio):
                 pass
             return
 
-        # Actualizar dropdown con la nueva opción y seleccionarla
         dd.options = _opciones_categorias()
         dd.value = str(nuevo_id)
         tf_nueva.value = ""
@@ -403,12 +442,14 @@ def modal_entrada(app, producto=None, on_refresh=None):
         **es.estilo_textfield(12), height=54)
     tf_pc = ft.TextField(
         label="Precio costo (opcional)",
-        value=(str(producto.get("precio_costo_orig", 0)) if producto else ""),
+        value=(str(producto.get("precio_costo_orig", 0))
+               if producto else ""),
         keyboard_type=ft.KeyboardType.NUMBER,
         **es.estilo_textfield(12), height=54)
     tf_pu = ft.TextField(
         label="Precio venta (opcional)",
-        value=(str(producto.get("precio_unitario_orig", 0)) if producto else ""),
+        value=(str(producto.get("precio_unitario_orig", 0))
+               if producto else ""),
         keyboard_type=ft.KeyboardType.NUMBER,
         **es.estilo_textfield(12), height=54)
 
@@ -433,6 +474,35 @@ def modal_entrada(app, producto=None, on_refresh=None):
 
     dd_cat, bloque_cat = _construir_selector_categoria(cat_default, None)
 
+    sw_granel = ft.Switch(
+        label="Se vende a granel (kg, litros)",
+        value=bool(producto.get("es_granel") if producto else 0),
+        active_color=es.COLOR_ACENTO,
+    )
+    # ── Dropdown de proveedor ──
+    prov_default = ""
+    if producto:
+        principal = pv.proveedor_principal(producto["nombre"])
+        if principal:
+            prov_default = str(principal["id"])
+    prov_ops = [ft.DropdownOption(key="", text="Sin proveedor")]
+    for p in pv.listar_proveedores(solo_activos=True):
+        prov_ops.append(ft.DropdownOption(
+            key=str(p["id"]), text=p["nombre"]))
+    dd_prov = ft.Dropdown(
+        label="Proveedor (opcional)",
+        value=prov_default,
+        options=prov_ops,
+        **es.borde_textfield(12))
+
+    def _crear_prov_inline(e):
+        _dlg_nuevo_prov_inline(app, dd_prov, producto)
+
+    btn_nuevo_prov = ft.TextButton(
+        "+ Nuevo proveedor",
+        icon=ft.Icons.ADD,
+        on_click=_crear_prov_inline,
+        style=ft.ButtonStyle(color=es.COLOR_ACENTO))
     tf_fecha = ft.TextField(
         label="Fecha y hora (YYYY-MM-DD)",
         value=_ahora_str(),
@@ -557,6 +627,44 @@ def modal_entrada(app, producto=None, on_refresh=None):
             page.update()
             return
 
+        # Asociar proveedor si se seleccionó
+        prov_id = None
+        if dd_prov.value:
+            try:
+                prov_id = int(dd_prov.value)
+            except ValueError:
+                prov_id = None
+        if prov_id:
+            # Auto-asociar el proveedor al producto (idempotente)
+            try:
+                pv.asociar_proveedor(n, prov_id)
+            except Exception:
+                pass
+            # Actualizar el último movimiento de ENTRADA para vincularlo
+            try:
+                with get_conn() as conn:
+                    conn.execute(
+                        "UPDATE movimientos SET proveedor_id=? "
+                        "WHERE id = (SELECT MAX(id) FROM movimientos "
+                        "WHERE tipo='ENTRADA' AND local_id=? "
+                        "AND usuario=?)",
+                        (prov_id, app.local_id,
+                         app.usuario["username"]))
+                inv.invalidar_cache()
+            except Exception:
+                pass
+        
+        # Guardar flag es_granel (propagado a todos los locales)
+        try:
+            with get_conn() as conn:
+                conn.execute(
+                    "UPDATE productos SET es_granel=? "
+                    "WHERE nombre=? COLLATE NOCASE",
+                    (1 if sw_granel.value else 0, n))
+            inv.invalidar_cache()
+        except Exception:
+            pass
+
         texto, tipo = _mensaje_movimiento(
             info, "Entrada", f"+{inv.fmt_cantidad(c)}")
 
@@ -571,11 +679,15 @@ def modal_entrada(app, producto=None, on_refresh=None):
         title=ft.Text("Registrar entrada"),
         content=ft.Column([
             tf_p, tf_cod, tf_c, tf_pc, tf_pu, dd_moneda, bloque_cat,
+            dd_prov, btn_nuevo_prov,
+            sw_granel,
             ft.Container(height=10), tf_fecha, lbl, error_lbl,
-        ], tight=True, spacing=10, width=340, scroll=ft.ScrollMode.AUTO),
+        ], tight=True, spacing=10, width=340,
+            scroll=ft.ScrollMode.AUTO),
         actions=[
             ft.TextButton("Cancelar",
-                          on_click=lambda e: cerrar_dialogo(page, dlg_ref["dlg"])),
+                          on_click=lambda e: cerrar_dialogo(
+                              page, dlg_ref["dlg"])),
             ft.FilledButton(
                 "Guardar", on_click=guardar,
                 style=ft.ButtonStyle(
@@ -628,14 +740,16 @@ def modal_salida(app, producto=None, on_refresh=None):
         else:
             p = inv.buscar_producto(clave, app.local_id)
             if p is None or not p.get("activo", 1):
-                lbl.content = caja_info("No encontrado o inactivo.", "error")
+                lbl.content = caja_info(
+                    "No encontrado o inactivo.", "error")
             else:
                 try:
                     c = float((tf_c.value or "0").replace(",", "."))
                 except ValueError:
                     c = 0
                 try:
-                    reb = float((tf_rebaja.value or "0").replace(",", "."))
+                    reb = float((tf_rebaja.value or "0")
+                                .replace(",", "."))
                 except ValueError:
                     reb = 0
                 pu = float(p["precio_unitario"] or 0)
@@ -645,7 +759,8 @@ def modal_salida(app, producto=None, on_refresh=None):
                         f"({inv.fmt_cantidad(p['stock'])})", "error")
                 elif reb > pu:
                     lbl.content = caja_info(
-                        f"Rebaja > precio (${inv.fmt_precio(pu)})", "error")
+                        f"Rebaja > precio (${inv.fmt_precio(pu)})",
+                        "error")
                 else:
                     total = (pu - reb) * c
                     lbl.content = caja_info(
@@ -738,10 +853,12 @@ def modal_salida(app, producto=None, on_refresh=None):
         content=ft.Column([
             tf_p, tf_cod, tf_c, tf_motivo, tf_rebaja,
             ft.Container(height=10), tf_fecha, lbl, error_lbl,
-        ], tight=True, spacing=10, width=340, scroll=ft.ScrollMode.AUTO),
+        ], tight=True, spacing=10, width=340,
+            scroll=ft.ScrollMode.AUTO),
         actions=[
             ft.TextButton("Cancelar",
-                          on_click=lambda e: cerrar_dialogo(page, dlg_ref["dlg"])),
+                          on_click=lambda e: cerrar_dialogo(
+                              page, dlg_ref["dlg"])),
             ft.FilledButton(
                 "Guardar", on_click=guardar,
                 style=ft.ButtonStyle(
@@ -800,7 +917,8 @@ def modal_traspaso(app, producto=None, on_refresh=None):
         else:
             p = inv.buscar_producto(clave, app.local_id)
             if p is None or not p.get("activo", 1):
-                lbl.content = caja_info("No encontrado o inactivo.", "error")
+                lbl.content = caja_info(
+                    "No encontrado o inactivo.", "error")
             else:
                 try:
                     c = float((tf_c.value or "0").replace(",", "."))
@@ -895,10 +1013,12 @@ def modal_traspaso(app, producto=None, on_refresh=None):
         title=ft.Text("Traspaso"),
         content=ft.Column([
             lbl_origen, tf_p, tf_cod, tf_c, dd_dest, lbl, error_lbl,
-        ], tight=True, spacing=10, width=340, scroll=ft.ScrollMode.AUTO),
+        ], tight=True, spacing=10, width=340,
+            scroll=ft.ScrollMode.AUTO),
         actions=[
             ft.TextButton("Cancelar",
-                          on_click=lambda e: cerrar_dialogo(page, dlg_ref["dlg"])),
+                          on_click=lambda e: cerrar_dialogo(
+                              page, dlg_ref["dlg"])),
             ft.FilledButton(
                 "Traspasar", on_click=guardar,
                 style=ft.ButtonStyle(
@@ -989,7 +1109,8 @@ def _dlg_precio(app, prod, cual, on_refresh=None):
                           tight=True, width=340, spacing=10),
         actions=[
             ft.TextButton("Cancelar",
-                          on_click=lambda e: cerrar_dialogo(page, dlg_ref["dlg"])),
+                          on_click=lambda e: cerrar_dialogo(
+                              page, dlg_ref["dlg"])),
             ft.FilledButton("Guardar", on_click=guardar,
                             style=es.estilo_boton_marca()),
         ],
@@ -1046,7 +1167,8 @@ def _dlg_categoria(app, prod, on_refresh=None):
                           tight=True, width=340, spacing=8),
         actions=[
             ft.TextButton("Cancelar",
-                          on_click=lambda e: cerrar_dialogo(page, dlg_ref["dlg"])),
+                          on_click=lambda e: cerrar_dialogo(
+                              page, dlg_ref["dlg"])),
             ft.FilledButton("Guardar", on_click=guardar,
                             style=es.estilo_boton_marca()),
         ],
@@ -1086,13 +1208,15 @@ def _dlg_codigo(app, prod, on_refresh=None):
         title=ft.Text(f"Código: {prod['nombre']}"),
         content=ft.Column([
             tf,
-            ft.Text(f"Sugerido: {inv.siguiente_codigo(app.local_id) or '—'}",
-                    size=11, color=es.COLOR_TEXTO_SUAVE),
+            ft.Text(
+                f"Sugerido: {inv.siguiente_codigo(app.local_id) or '—'}",
+                size=11, color=es.COLOR_TEXTO_SUAVE),
             error_lbl,
         ], tight=True, width=300, spacing=6),
         actions=[
             ft.TextButton("Cancelar",
-                          on_click=lambda e: cerrar_dialogo(page, dlg_ref["dlg"])),
+                          on_click=lambda e: cerrar_dialogo(
+                              page, dlg_ref["dlg"])),
             ft.FilledButton("Guardar", on_click=guardar,
                             style=es.estilo_boton_marca()),
         ],
@@ -1133,7 +1257,8 @@ def _dlg_renombrar(app, prod, on_refresh=None):
         content=ft.Column([tf, error_lbl], tight=True, width=320),
         actions=[
             ft.TextButton("Cancelar",
-                          on_click=lambda e: cerrar_dialogo(page, dlg_ref["dlg"])),
+                          on_click=lambda e: cerrar_dialogo(
+                              page, dlg_ref["dlg"])),
             ft.FilledButton("Guardar", on_click=guardar,
                             style=es.estilo_boton_marca()),
         ],
@@ -1179,7 +1304,8 @@ def _dlg_umbrales(app, prod, on_refresh=None):
                           tight=True, width=300, spacing=10),
         actions=[
             ft.TextButton("Cancelar",
-                          on_click=lambda e: cerrar_dialogo(page, dlg_ref["dlg"])),
+                          on_click=lambda e: cerrar_dialogo(
+                              page, dlg_ref["dlg"])),
             ft.FilledButton("Guardar", on_click=guardar,
                             style=es.estilo_boton_marca()),
         ],
@@ -1223,7 +1349,8 @@ def _conf_baja(app, prod, on_refresh=None):
         ], tight=True, width=320, spacing=12),
         actions=[
             ft.TextButton("Cancelar",
-                          on_click=lambda e: cerrar_dialogo(page, dlg_ref["dlg"])),
+                        on_click=lambda e: cerrar_dialogo(
+                            page, dlg_ref["dlg"])),
             ft.FilledButton("Dar de baja", on_click=hacer,
                             style=ft.ButtonStyle(
                                 bgcolor=es.COLOR_PELIGRO, color="white")),
@@ -1232,3 +1359,52 @@ def _conf_baja(app, prod, on_refresh=None):
     )
     dlg_ref["dlg"] = dlg
     page.show_dialog(dlg)
+    
+    
+def _dlg_nuevo_prov_inline(app, dd_prov, producto):
+    """Crea un proveedor nuevo y lo añade al dropdown + lo asocia
+    al producto si aplica."""
+    page = app.page
+    tf_n = ft.TextField(label="Nombre", autofocus=True,
+                        **es.estilo_textfield(12), height=54)
+    tf_t = ft.TextField(label="Teléfono (opcional)",
+                        keyboard_type=ft.KeyboardType.PHONE,
+                        **es.estilo_textfield(12), height=54)
+    err = ft.Text("", color=es.COLOR_PELIGRO, size=12)
+
+    def guardar(e):
+        err.value = ""
+        try:
+            pid = pv.crear_proveedor(tf_n.value, telefono=tf_t.value)
+            # Añadir al dropdown y seleccionarlo
+            dd_prov.options = dd_prov.options + [
+                ft.DropdownOption(
+                    key=str(pid),
+                    text=pv.obtener_proveedor(pid)["nombre"])]
+            dd_prov.value = str(pid)
+            # Asociar al producto si existe
+            if producto:
+                pv.asociar_proveedor(producto["nombre"], pid)
+        except Exception as ex:
+            err.value = str(ex)
+            page.update()
+            return
+        page.pop_dialog()
+        try:
+            dd_prov.update()
+        except Exception:
+            pass
+
+    page.show_dialog(ft.AlertDialog(
+        title=ft.Text("Nuevo proveedor"),
+        content=ft.Column([tf_n, tf_t, err],
+                          tight=True, width=320, spacing=10),
+        actions=[
+            ft.TextButton("Cancelar",
+                          on_click=lambda e: page.pop_dialog()),
+            ft.FilledButton("Crear", on_click=guardar,
+                            style=es.estilo_boton_marca()),
+        ],
+        actions_alignment=ft.MainAxisAlignment.END,
+    ))
+    

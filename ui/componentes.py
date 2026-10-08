@@ -257,7 +257,8 @@ def bottom_sheet(content, page=None, alto_max_pct=0.85) -> ft.BottomSheet:
 
 
 def snack(page, texto, tipo="info"):
-    """SnackBar diferido para no chocar con cierres de diálogos."""
+    """SnackBar diferido para no chocar con cierres de diálogos.
+    Aparece abajo. Para notificaciones arriba usar toast()."""
     colores = {
         "info": "#374151", "ok": "#16a34a",
         "error": "#dc2626", "warn": "#ca8a04",
@@ -287,6 +288,70 @@ def snack(page, texto, tipo="info"):
 
     try:
         page.run_task(_show)
+    except Exception:
+        pass
+
+
+def toast(page, texto, tipo="ok", duracion=2.0):
+    """
+    Notificación flotante en la parte SUPERIOR de la pantalla.
+    Alternativa a snack() cuando el mensaje no debe aparecer abajo
+    (por ejemplo, al agregar al carrito en el POS).
+    Se autodestruye después de `duracion` segundos.
+    """
+    colores = {
+        "info": "#374151", "ok": "#16a34a",
+        "error": "#dc2626", "warn": "#ca8a04",
+    }
+    icono = {
+        "info": ft.Icons.INFO_OUTLINE,
+        "ok": ft.Icons.CHECK_CIRCLE,
+        "error": ft.Icons.ERROR_OUTLINE,
+        "warn": ft.Icons.WARNING_AMBER,
+    }.get(tipo, ft.Icons.INFO_OUTLINE)
+
+    contenido = ft.Container(
+        content=ft.Row([
+            ft.Icon(icono, color="white", size=20),
+            ft.Text(texto, color="white", size=13,
+                    max_lines=2, overflow=ft.TextOverflow.ELLIPSIS,
+                    expand=True),
+        ], spacing=10,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        bgcolor=colores.get(tipo, "#374151"),
+        padding=ft.Padding.symmetric(horizontal=16, vertical=12),
+        border_radius=12,
+        shadow=ft.BoxShadow(
+            blur_radius=12, spread_radius=0,
+            color="#00000088",
+            offset=ft.Offset(0, 3)),
+    )
+
+    overlay = ft.Container(
+        content=contenido,
+        top=60, left=14, right=14,
+    )
+
+    async def _show_and_hide():
+        import asyncio
+        try:
+            page.overlay.append(overlay)
+            page.update()
+        except Exception:
+            return
+        try:
+            await asyncio.sleep(duracion)
+        except Exception:
+            pass
+        try:
+            if overlay in page.overlay:
+                page.overlay.remove(overlay)
+            page.update()
+        except Exception:
+            pass
+
+    try:
+        page.run_task(_show_and_hide)
     except Exception:
         pass
 
@@ -347,7 +412,8 @@ def mounted(ctrl) -> bool:
         return True
     except Exception:
         return False
-    
+
+
 def panel_modal(contenido, width=340):
     """Envuelve contenido con estilo de diálogo."""
     return ft.Container(
@@ -448,4 +514,84 @@ def mostrar_modal(page, contenido, on_close=None):
 
     return cerrar
 
+async def _copiar_async(page, texto) -> bool:
+    """Copia texto al portapapeles probando los dos APIs de Flet."""
+    # API nuevo (Flet >= 0.27): page.clipboard.set() async
+    try:
+        clipboard = getattr(page, "clipboard", None)
+        if clipboard is None:
+            clipboard = ft.Clipboard()
+            page.services.append(clipboard)
+            page.update()
+        await clipboard.set(texto)
+        return True
+    except Exception:
+        pass
+
+    # API antiguo (por si acaso)
+    try:
+        page.set_clipboard(texto)
+        return True
+    except Exception:
+        pass
+
+    return False
+
+
+def copiar_portapapeles(page, texto, app=None):
+    """
+    Copia al portapapeles usando la API disponible.
+    Si nada funciona, muestra un diálogo con el texto seleccionable.
+    """
+    async def _run():
+        ok = await _copiar_async(page, texto)
+        if ok:
+            try:
+                toast(page, "Copiado al portapapeles", "ok")
+            except Exception:
+                pass
+        else:
+            _mostrar_texto_para_copiar(page, texto)
+
+    try:
+        page.run_task(_run)
+    except Exception:
+        _mostrar_texto_para_copiar(page, texto)
+
+
+def _mostrar_texto_para_copiar(page, texto):
+    """Fallback: muestra el texto en un diálogo seleccionable."""
+    try:
+        page.show_dialog(ft.AlertDialog(
+            title=ft.Text("Copia manualmente"),
+            content=ft.Column([
+                ft.Text(
+                    "No se pudo copiar automáticamente. "
+                    "Mantén pulsado el texto para seleccionarlo:",
+                    size=12, color=es.COLOR_TEXTO_SUAVE),
+                ft.Container(height=8),
+                ft.Container(
+                    content=ft.Text(texto, size=11,
+                                    color=es.COLOR_TEXTO,
+                                    selectable=True,
+                                    font_family="monospace"),
+                    padding=10,
+                    bgcolor=es.COLOR_SUPERFICIE_2,
+                    border_radius=8,
+                    height=300,
+                ),
+            ], tight=True, width=400, spacing=4,
+                scroll=ft.ScrollMode.AUTO),
+            actions=[
+                ft.FilledButton(
+                    "Cerrar",
+                    on_click=lambda e: page.pop_dialog(),
+                    style=es.estilo_boton_marca()),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        ))
+    except Exception:
+        pass
+    
+    
 
