@@ -1,21 +1,24 @@
-# Almacén — App móvil (Combos Flash)
+# Almacén — App de escritorio (Combos Flash)
 
-App **Android-only**, **offline-first** y **multi-local** para gestión
-de almacén, inventario, punto de venta (POS), clientes, proveedores,
-gastos, caja, tickets y devoluciones. Soporte completo
-**multimoneda (CUP / USD / EUR)**, **5 paletas × claro/oscuro**,
-**promedio ponderado de costos**, **propagación de precios**,
-**cuentas por cobrar y por pagar**, **Excel multi-hoja**, y backup
-manual/importación de BD.
+App **Windows / desktop**, **offline-first** y **multi-local** para
+gestión de almacén, inventario, punto de venta (POS), clientes,
+proveedores, gastos, caja, tickets y devoluciones. Soporte completo
+**multimoneda (CUP / USD / EUR)**, **promedio ponderado de costos**,
+**propagación de precios**, **cuentas por cobrar y por pagar**,
+**Excel multi-hoja**, y backup manual/importación de BD.
 
 Construida con **Python + Flet 1.0.3** sobre **Flutter 3.44.8**, SQLite
-local, y empaquetada como APK vía **GitHub Actions**.
+local, y empaquetada como **`.exe` portable** vía `flet build windows`.
+
+Esta versión está personalizada para **Combos Flash** (paleta roja de
+marca, logo propio). Para la versión genérica con **selector de paletas**
+y branding neutro, ver el repo `almacen-app-desktop` (próximamente).
 
 ---
 
 ## Tabla de contenidos
 
-1. [Estado actual (v10)](#1-estado-actual-v10)
+1. [Estado actual](#1-estado-actual)
 2. [Estructura del proyecto](#2-estructura-del-proyecto)
 3. [Esquema BD v10](#3-esquema-bd-v10)
 4. [Rendimiento](#4-rendimiento)
@@ -31,11 +34,11 @@ local, y empaquetada como APK vía **GitHub Actions**.
 
 ---
 
-## 1. Estado actual (v10)
+## 1. Estado actual
 
 ### ✅ Lo que YA está implementado
 
-#### Inventario (v5–v8)
+#### Inventario
 
 - **Multi-local**: 1 Almacén + N tiendas + 1 vista virtual "General".
 - **Alta de productos** con código auto-sugerido (`F[A-Z][0-9]{4}`).
@@ -47,7 +50,7 @@ local, y empaquetada como APK vía **GitHub Actions**.
 - **Multimoneda real** con valor original + CUP + promedio ponderado.
 - **Roles** admin/almacen/comun validados en capa de negocio.
 
-#### POS / Ventas (v9–v10)
+#### POS / Ventas
 
 - **Pantalla `/pos`** con carrito, búsqueda única, chips de categoría.
 - **Cobro mixto** hasta 3 pagos con moneda por pago.
@@ -61,14 +64,14 @@ local, y empaquetada como APK vía **GitHub Actions**.
 - **Validación de stock** al agregar y al editar.
 - **POS no obligatorio**: el flujo "Salida → Venta" sigue existiendo.
 
-#### Clientes (v9)
+#### Clientes
 
 - **CRUD completo** con límite de crédito.
 - **Cuentas por cobrar** con abonos parciales.
 - **Historial de compras** por cliente.
 - **Vista "cuentas por cobrar"**.
 
-#### Proveedores (v10)
+#### Proveedores
 
 - **CRUD simple** (nombre + teléfono) con capitalización de cada palabra.
 - **Relación N:M** producto↔proveedor (un producto puede tener varios
@@ -81,7 +84,7 @@ local, y empaquetada como APK vía **GitHub Actions**.
 - **Crear proveedor inline** desde el modal de entrada y desde el
   detalle de producto.
 
-#### Gastos operativos (v10)
+#### Gastos operativos
 
 - **CRUD completo** con categorías configurables
   (Luz, Agua, Alquiler, Salario, Transporte, Otros).
@@ -92,7 +95,7 @@ local, y empaquetada como APK vía **GitHub Actions**.
 - **Total del período** en vivo.
 - **Utilidad neta en Dashboard** (Ganancia − Gastos).
 
-#### Caja (v9–v10)
+#### Caja
 
 - **Múltiples sesiones por día** por usuario.
 - **Cálculo del saldo esperado**:
@@ -101,7 +104,7 @@ local, y empaquetada como APK vía **GitHub Actions**.
 - **Resumen por método** de pago y abonos.
 - **Historial** de sesiones cerradas.
 
-#### Tickets (v9)
+#### Tickets
 
 - **PDF 80mm** (formato térmico) con `fpdf2`.
 - **PNG 440px** para compartir por WhatsApp (Pillow).
@@ -109,38 +112,53 @@ local, y empaquetada como APK vía **GitHub Actions**.
 - **Datos del negocio** configurables.
 - **Diálogo "Preparar envío"** que guarda PDF + PNG y copia el texto.
 
-#### Devoluciones (v9)
+#### Devoluciones
 
 - **Parcial o total**, hasta **7 días** de la venta.
 - **Revierte stock** con movimiento `ENTRADA`.
 - **Ajusta saldo pendiente** de la orden si era fiado.
 - **Motivo** obligatorio.
 
-#### Paletas (v9)
-
-- **5 paletas**: Negro + Dorado, Azul, Verde, Rojo, Púrpura.
-- **2 modos**: claro y oscuro.
-- **10 combinaciones** totales.
-- **Persistencia** por usuario.
-
 #### Herramientas
 
-- **`full_test.py`**: **134 tests**.
-  ```
-  python full_test.py   → ✅ TODOS LOS TESTS PASARON (134/134)
-  ```
-- **`seed_data.py`**: puebla la BD con datos de prueba masivos.
-- **`diagnostico.py`**: muestra ubicación de la BD según contexto.
+- **`full_test.py`**: test suite completo.
+- **`diagnostico.py`**: muestra la ubicación real de la BD y el
+  estado del esquema.
+- **`estado.py`**: reporte rápido de tablas y versiones.
+- **`migrar.py`**: migración standalone P1(v4) → v10 con backup
+  automático.
+
+### 🆕 Específico de esta versión desktop
+
+- **`rutas.py` portable**: escribe `datos/`, `backups/`, `logs/`,
+  `tickets/` al lado del `.exe`. Si esa carpeta no es escribible
+  (p. ej. `C:\Program Files`), cae automáticamente a
+  `%LOCALAPPDATA%\Almacen\`.
+- **`get_conn()` como contextmanager**: cierra la conexión SQLite al
+  salir del `with`. Fix del error `[Errno 22]` al importar la BD.
+- **Importador de BD robusto**: escribe a un temporal y usa
+  `os.replace()` para el reemplazo atómico. Borra WAL/SHM huérfanos.
+- **`editar_movimiento()` en `inventario.py`**: permite editar
+  movimientos `ENTRADA` y `SALIDA` revirtiendo/aplicando el efecto
+  sobre stock.
+- **Drawer con `Stack`** de posicionamiento absoluto: cubre toda la
+  altura sin dejar franja entre drawer y barra inferior.
+- **FAB del POS movido a la AppBar**: ya no tapa el último producto
+  de la lista.
+- **Iconos propios**: `assets/icon.png` + `assets/icon.ico`
+  multi-resolución para barra de título, taskbar, Alt+Tab y el `.exe`.
+- **Dropdown de movimiento** limitado a `ENTRADA` y `SALIDA` para
+  evitar intentos de edición sobre `BAJA`/`TRASPASO_*`.
 
 ---
 
 ## 2. Estructura del proyecto
 
 ```text
-almacen_movil_Raidel/
+almacen_desktop_Flet/
 ├── main.py                       Entry Flet
-├── rutas.py                      FLET_APP_STORAGE_DATA portable
-├── db.py                         Esquema v10 + migración no destructiva
+├── rutas.py                      Rutas portables (dev vs .exe)
+├── db.py                         Esquema v10 + migración + contextmanager
 ├── seguridad.py                  PBKDF2-HMAC-SHA256
 ├── inventario.py                 Lógica stock + multimoneda + caché
 ├── locales.py                    CRUD locales + General virtual
@@ -157,26 +175,27 @@ almacen_movil_Raidel/
 ├── metricas.py                   Métricas por período calendario
 ├── backup.py                     Copia con retención 30 días
 ├── excel_sync.py                 Excel multi-hoja con moneda
-├── full_test.py                  Test exhaustivo (134 tests)
-├── seed_data.py                  Genera datos masivos de prueba
-├── diagnostico.py                Muestra ubicación de la BD
+├── full_test.py                  Test exhaustivo
+├── diagnostico.py                Ubicación real de la BD
+├── estado.py                     Reporte de tablas y versiones
+├── migrar.py                     Migración standalone con backup
 ├── pyproject.toml                Config Flet + dependencias
 ├── requirements.txt              flet, openpyxl, fpdf2, Pillow
+├── uv.lock                       Lockfile de uv
 ├── README.md                     Este archivo
 ├── .gitignore
-├── .github/workflows/
-│   └── build-apk.yml             Build APK
-├── recursos/                     icon.png (obligatorio), login_bg.png, etc.
+├── assets/                       icon.png, icon.ico, README.md
 └── ui/
     ├── __init__.py
+    ├── _scroll.py                Preservación de scroll entre vistas
     ├── app.py                    Router + estado + drawer + carrito POS
-    ├── estilos.py                5 paletas + helpers + MONEDAS_INFO
+    ├── estilos.py                Paleta Combos Flash + helpers
     ├── componentes.py            Widgets + snack + toast + modales
     ├── drawer.py                 Panel lateral
-    ├── login.py                  Login dinámico + primer arranque
-    ├── principal.py              Inicio + chips + selector tipos + FAB POS
+    ├── login.py                  Login + primer arranque
+    ├── principal.py              Inicio + chips + selector tipos
     ├── dashboard.py              Métricas + Gastos + Utilidad neta
-    ├── movimientos.py            Historial + paginación
+    ├── movimientos.py            Historial + paginación + editar
     ├── lista_productos.py        Lista filtrada desde Dashboard
     ├── perfil.py                 Perfil + admin + accesos
     ├── pos.py                    POS: carrito + cobro + ticket
@@ -188,13 +207,12 @@ almacen_movil_Raidel/
     ├── admin_categorias_gastos.py CRUD categorías gastos
     ├── caja.py                   Vista caja (UI)
     ├── config_negocio.py         Datos del negocio + métodos de pago
-    ├── paletas.py                Selector de paletas + modo
     ├── admin_usuarios.py         Gestión usuarios (admin)
     ├── admin_locales.py          Abrir/cerrar tiendas (admin)
     ├── admin_categorias.py       CRUD tipos de producto
     ├── umbrales.py               Edición masiva
     ├── modales.py                Bottom sheets + entrada/salida/traspaso
-    └── exportar.py               FilePicker + Excel + BD
+    └── exportar.py               FilePicker + Excel + BD + backup
 ```
 
 ---
@@ -206,11 +224,11 @@ almacen_movil_Raidel/
 - `ALTER TABLE ADD COLUMN`). Los datos de v9 se conservan.
 
 ```sql
--- TABLAS v8
+-- TABLAS base
 meta, locales, usuarios, configuracion, categorias, productos,
 movimientos (con proveedor_id opcional)
 
--- TABLAS v9
+-- TABLAS POS + clientes + caja
 clientes, ordenes_venta, orden_items, pagos, abonos,
 devoluciones, caja_sesiones, metodos_pago
 
@@ -264,6 +282,7 @@ pagos_proveedor (
 | **Caché en memoria** con `@_write`               | Sin repetir SQL                 |
 | **`resumen_periodo` unificado**                  | Dashboard en 1 query            |
 | **Paginación** (30 Inicio, 30 Historial, 40 POS) | 1200 movs → 30 widgets          |
+| **`get_conn()` contextmanager**                  | Cierra conexiones, evita locks  |
 
 ---
 
@@ -272,19 +291,13 @@ pagos_proveedor (
 ### Probar localmente
 
 ```bash
-cd almacen_movil_Raidel
+cd almacen_desktop_Flet
 pip install -r requirements.txt
 flet run main.py
 ```
 
-**Dependencias:** `flet==1.0.3`, `openpyxl`, `fpdf2>=2.7.8`,
+**Dependencias**: `flet==1.0.3`, `openpyxl`, `fpdf2>=2.7.8`,
 `Pillow>=10.0.0`.
-
-### Poblar con datos de prueba
-
-```bash
-python seed_data.py
-```
 
 ### Ejecutar tests
 
@@ -292,18 +305,43 @@ python seed_data.py
 python full_test.py
 ```
 
-Debe dar **✅ TODOS LOS TESTS PASARON (134/134)**.
+### Compilar `.exe` para Windows
 
-### Compilar APK
+**Recomendado**: usar `uv` para un entorno aislado y limpio.
 
 ```bash
-git add .
-git commit -m "descripción"
-git push origin main
+# 1. Instalar uv (una sola vez)
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+
+# 2. Cerrar y reabrir la terminal para que uv quede en PATH
+
+# 3. Desde la carpeta del proyecto
+cd almacen_desktop_Flet
+uv sync
+uv run flet build windows
 ```
 
-Espera ~10–15 min y descarga desde
-`Actions → Build APK → Artifacts → almacen-raidel-apk`.
+Tarda 5–15 min la primera vez. El `.exe` queda en:
+
+```
+build\windows\almacen-movil-raidel.exe
+```
+
+(Renombrable a `Almacen.exe` sin problema — Windows no exige que
+coincida con nada del proyecto.)
+
+### Distribuir
+
+Empaqueta la carpeta completa de `build\windows\` como ZIP:
+
+```bash
+cd build
+zip -r ../Almacen_CombosFlash_v1.0.zip windows/
+```
+
+El ZIP resultante es **portable**: se descomprime donde se quiera y
+el usuario hace doble click en el `.exe`. La BD se crea al lado del
+`.exe` (o en `%LOCALAPPDATA%\Almacen\` si no se puede escribir ahí).
 
 ---
 
@@ -328,7 +366,6 @@ Espera ~10–15 min y descarga desde
 | Editar / Eliminar movimiento                |  ✅   | ✅ / ❌ |  ❌   |
 | Gestionar usuarios                          |  ✅   |   ❌    |  ❌   |
 | Excel / Backup / Import BD                  |  ✅   |   ✅    |  ✅   |
-| Paletas y modo                              |  ✅   |   ✅    |  ✅   |
 
 ---
 
@@ -368,10 +405,9 @@ Espera ~10–15 min y descarga desde
 - **Auditoría por usuario** (filtro en Historial).
 - **Reporte de utilidad neta** (ventas − costo − gastos).
 
-#### 7.4 Impresión térmica Bluetooth
+#### 7.4 Impresión térmica
 
-- Impresora 58mm / 80mm.
-- Requiere extensión Dart (`flutter_blue_plus` + `esc_pos_utils`).
+- Impresora 58mm / 80mm vía USB o red.
 - Alternativa: el PDF 80mm se imprime desde el visor del sistema.
 
 #### 7.5 Ticket con más opciones
@@ -396,30 +432,31 @@ Espera ~10–15 min y descarga desde
 
 ### 🟢 Opcional (v2.0)
 
-#### 7.7 Escaneo con cámara
-
-Requiere **extensión Dart custom** con `mobile_scanner`. Alto riesgo:
-documentación escasa, compatibilidad con Flutter 3.44.8, permisos
-runtime. Recomendado solo cuando la app esté estable y con clientes.
-
-#### 7.8 Multi-negocio
+#### 7.7 Multi-negocio
 
 Separar negocios completos dentro de la misma app.
 
-#### 7.9 Nómina / RRHH
+#### 7.8 Nómina / RRHH
 
 - Trabajadores y puestos.
 - Asistencia.
 - Cálculo de nómina.
 
-#### 7.10 Mesas / Cocina
+#### 7.9 Mesas / Cocina
 
 Solo si el nicho objetivo son restaurantes o paladares.
 
-#### 7.11 Sync en la nube
+#### 7.10 Sync en la nube
 
 Requiere backend. Rompe el modelo offline-first.
 Recomendado solo si aparece un cliente grande.
+
+#### 7.11 Selector de paletas
+
+**Esta versión (Combos Flash)** viene con la paleta roja de marca
+fija. El **selector de 5 paletas** con persistencia por usuario está
+planificado para la **versión pública genérica**
+(`almacen-app-desktop`).
 
 ---
 
@@ -440,11 +477,10 @@ Recomendado solo si aparece un cliente grande.
 | Caja               | 9/10       |
 | Facturación        | 7/10       |
 | Métodos de pago    | 8/10       |
-| Paletas            | 10/10      |
 | UI/UX              | 8/10       |
 | Rendimiento        | 8/10       |
 | Seguridad          | 7/10       |
-| Estabilidad        | 6/10       |
+| Estabilidad        | 7/10       |
 | Códigos barras/QR  | 0/10       |
 | Reportes avanzados | 6/10       |
 | Gráficos           | 0/10       |
@@ -461,14 +497,15 @@ Recomendado solo si aparece un cliente grande.
 
 - **Con etiquetas barcode + gráficos + reportes avanzados
   (2-3 semanas):** → **9.5/10**
-- **Además ONAT + cámara:** → **10/10**
+- **Además ONAT:** → **10/10**
 
 ### Riesgos a conocer
 
-1. **Android real vs Windows dev.** Falta probar el APK en móvil.
-2. **Flet 1.0.3 es joven.** Los plugins de cámara, Bluetooth y
-   notificaciones no están todos disponibles. Algunos requieren
-   escribir extensión Dart.
+1. **Windows-only por ahora.** Un port a macOS/Linux requiere
+   recompilar con `flet build macos` / `flet build linux`.
+2. **Flet 1.0.3 es joven.** Algunas integraciones nativas
+   (impresoras, lectores de código de barras) requieren extensión
+   Dart custom.
 3. **Precio.** En Cuba es difícil cobrar. Modelo freemium sugerido.
 
 ---
@@ -501,122 +538,107 @@ sin depender de la nube.
 
 ## 10. Stack técnico
 
-| Capa            | Tecnología                       |
-| --------------- | -------------------------------- |
-| Frontend        | Flet 1.0.3 (Flutter 3.44.8)      |
-| Lenguaje        | Python 3.12                      |
-| Persistencia    | SQLite (WAL mode)                |
-| Excel           | openpyxl                         |
-| PDF             | fpdf2                            |
-| Imágenes        | Pillow                           |
-| Auth            | PBKDF2-HMAC-SHA256 (200k iter)   |
-| Compilación APK | GitHub Actions + flet build apk  |
-| Package name    | `com.combosflash.almacen_raidel` |
-| Nombre launcher | `Almacen`                        |
+| Capa            | Tecnología                     |
+| --------------- | ------------------------------ |
+| Frontend        | Flet 1.0.3 (Flutter 3.44.8)    |
+| Lenguaje        | Python 3.12                    |
+| Persistencia    | SQLite (WAL mode)              |
+| Excel           | openpyxl                       |
+| PDF             | fpdf2                          |
+| Imágenes        | Pillow                         |
+| Auth            | PBKDF2-HMAC-SHA256 (200k iter) |
+| Compilación     | `flet build windows` vía `uv`  |
+| Nombre del .exe | `almacen-movil-raidel.exe`     |
+| Target          | Windows 10+ (x64)              |
 
 ---
 
 ## 11. Historial de versiones
 
-### v10 — Gastos + Proveedores + Editar orden (actual)
+### v1.0 — Desktop Combos Flash (actual)
 
-**Gastos operativos:**
+**Base portada desde la versión Android v10.**
 
-- Tablas `categorias_gastos` y `gastos`.
-- CRUD con moneda CUP/USD/EUR.
-- Gastos por local o globales.
-- Switch "Pagado de la caja abierta" → afecta cuadre.
-- Filtros por período, local y categoría.
-- Utilidad neta en Dashboard.
+**Nuevo en esta versión desktop:**
 
-**Proveedores:**
+- `rutas.py` portable: escribe al lado del `.exe`, con fallback a
+  `%LOCALAPPDATA%`.
+- `get_conn()` como contextmanager (fix del error `[Errno 22]` al
+  importar la BD).
+- Importador de BD robusto con `os.replace()` atómico y limpieza de
+  WAL/SHM.
+- `editar_movimiento()` en `inventario.py` (revierte y aplica stock).
+- Drawer con `Stack` de posicionamiento absoluto (sin franja entre
+  drawer y barra inferior).
+- FAB del POS movido a la AppBar (ya no tapa el último producto).
+- Iconos embebidos: `icon.png` + `icon.ico` multi-resolución.
+- Dropdown de movimiento limitado a `ENTRADA` y `SALIDA`.
+- Paleta Combos Flash fija (rojo de marca).
 
-- Tabla `proveedores` + `producto_proveedores` (N:M) +
-  `pagos_proveedor`.
-- Capitalización de cada palabra del nombre.
-- Relación N:M producto↔proveedor por nombre (global).
-- Proveedor principal opcional por producto.
-- Cuentas por pagar con saldo vivo.
-- Auto-asociación al dar entrada con proveedor.
-- Crear proveedor inline desde entrada y detalle de producto.
-- Modal de gestión de proveedores por producto.
+**Features heredadas del Android v10:**
 
-**POS:**
-
-- Editar orden de venta (cambiar cantidad, quitar ítems).
-- Validación de stock al agregar y editar.
-- Toast arriba en lugar de snackbar abajo.
-
-**UI:**
-
-- Botones a ancho completo en listas.
-- Modales con X arriba a la derecha.
-- Toggles verde/gris para activo/inactivo.
-- Textos largos con `max_lines` + `ellipsis`.
-
-**Tests:**
-
-- `full_test.py` → **134/134**.
-
-### v9 — POS + Clientes + Caja + Tickets + Paletas
-
-- POS con carrito y cobro mixto (3 pagos).
+- Inventario multi-local con vista General.
+- POS con cobro mixto hasta 3 pagos.
 - Clientes + cuentas por cobrar + abonos parciales.
-- Caja con sesiones y cuadre.
-- Tickets PDF 80mm + PNG + texto.
-- Devoluciones (7 días).
-- Métodos de pago configurables (9 por defecto).
-- 5 paletas × claro/oscuro.
-- Flag de granel.
-- 87 tests.
-
-### v8 — Categorías + Métricas + Rendimiento
-
-- Tabla `categorias` con CRUD.
-- `precio_costo_momento` en movimientos.
-- Chips de período calendario.
-- Consistencia de códigos global.
-- WAL + PRAGMAs + caché.
-- 99 tests.
-
-### v7 — Multimoneda
-
-- Schema v7 con `moneda_*` y `*_orig`.
-- Recálculo automático al cambiar tasa.
-
-### v6 — Multi-local
-
-- Almacén + N tiendas + General virtual.
-
-### v5 — Base
-
-- Login + primer arranque.
-- CRUD productos.
-- Entrada / Salida / Baja.
-- Umbrales verde/amarillo.
+- Proveedores + cuentas por pagar.
+- Gastos operativos + categorías configurables.
+- Caja con sesiones y cuadre (descuenta gastos de la sesión).
+- Tickets PDF 80mm + PNG + texto plano.
+- Devoluciones hasta 7 días.
+- 9 métodos de pago configurables.
+- Excel multi-hoja con moneda.
+- Multimoneda CUP/USD/EUR con promedio ponderado.
+- Esquema BD v10 + migración automática desde P1 (v4).
 
 ---
 
 ## 12. Cómo continuar desarrollo
 
 1. **Antes de tocar código**, correr `python full_test.py`.
-   Debe dar **134/134**.
-2. **Cambios pequeños**: push a `main` → GitHub Actions compila.
-3. **Cambios grandes**: probar local con `flet run main.py`.
-4. **Nunca subir**: `.flet/`, `datos/`, `backups/`, `*.db`,
-   `__pycache__/`, `_test_full/`, `tickets/`.
-5. **Backup antes de tocar**: desde Perfil.
+2. **Cambios pequeños**: probar con `flet run main.py`.
+3. **Cambios grandes**: recompilar con
+   `uv run flet build windows`.
+4. **Nunca subir al repo**: `build/`, `.flet/`, `.venv/`, `datos/`,
+   `backups/`, `logs/`, `tickets/`, `*.db`, `__pycache__/`.
+5. **Backup antes de tocar**: desde Perfil → Backup.
+
+### Flujo típico de trabajo
+
+```bash
+# Editar código
+code .
+
+# Probar en dev
+flet run main.py
+
+# Cuando esté listo, compilar
+rm -rf build/ .flet/
+export PATH="$HOME/.local/bin:$PATH"
+uv run flet build windows
+
+# Renombrar el .exe si quieres
+mv build/windows/almacen-movil-raidel.exe build/windows/Almacen.exe
+
+# Empaquetar
+cd build
+zip -r ../Almacen_CombosFlash_vX.Y.zip windows/
+
+# Commit y push
+cd ..
+git add -A
+git commit -m "descripción del cambio"
+git push
+```
 
 ### Próxima fase recomendada
 
-**1. Probar el APK en móvil real (Redmi 12 y Redmi 14).**
+**1. Probar el `.exe` en una PC limpia** (sin Python ni Flet
+instalados). Verificar que:
 
-- Login → Inicio → POS → venta → ticket.
-- Clientes → fiado → abono.
-- Proveedores → crear → producto → entrada.
-- Gastos → crear → dashboard → utilidad neta.
-- Caja → abrir → vender → gasto → cerrar.
-- Cambiar paleta → persistencia.
+- Se abre sin errores
+- Iconos se ven correctamente
+- Importar BD funciona
+- Persistencia entre sesiones OK
 
 **2. Con feedback real, arrancar Etiquetas barcode/QR.**
 
@@ -624,13 +646,16 @@ sin depender de la nube.
 
 **4. ONAT solo con asesor + cliente concreto.**
 
+**5. Versión pública con selector de paletas** → repo separado
+`almacen-app-desktop`.
+
 ---
 
 ## 13. Licencia y contacto
 
 **Propietario:** Di-2003 / Combos Flash
-**Repo:** https://github.com/Di-2003/almacen_movil_Raidel
-**Package:** `com.combosflash.almacen_raidel`
-**Target device:** Android 7+ (minSdk 24)
+**Repo:** https://github.com/Di-2003/almacen-app-desktop-ComboFlash
+**Plataforma:** Windows 10+ (x64)
+**Versión actual:** v1.0
 
 Para reportar issues o sugerencias, abrir un issue en GitHub.
