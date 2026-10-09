@@ -1,14 +1,11 @@
-# ============================================================
-# Paletas Almacén Raidel — 5 combinaciones × claro/oscuro
-# ============================================================
-
+"""
+Paleta Combos Flash + modo claro/oscuro.
+"""
 import warnings
 import flet as ft
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-
-# ---------- Marca (no cambia con paleta) ----------
 
 COLOR_MARCA_NEGRO       = "#0a0a0a"
 COLOR_MARCA_NEGRO_SUAVE = "#1a1a1a"
@@ -25,60 +22,21 @@ COLOR_ROJO     = "#ef4444"
 ORDEN_COLOR = {"rojo": 0, "amarillo": 1, "verde": 2}
 
 
-# ---------- Paletas (solo cambia el acento) ----------
-
-PALETAS = {
-    "dorado": {
-        "nombre": "Negro + Dorado",
-        "acento_dark":        "#d4af37",
-        "acento_light":       "#a8862a",
-        "acento_hover_dark":  "#f0d97a",
-        "acento_hover_light": "#8a6a1c",
-        "acento_suave_dark":  "#2a2008",
-        "acento_suave_light": "#fdf6e3",
-    },
-    "azul": {
-        "nombre": "Azul corporativo",
-        "acento_dark":        "#3b82f6",
-        "acento_light":       "#2563eb",
-        "acento_hover_dark":  "#60a5fa",
-        "acento_hover_light": "#1d4ed8",
-        "acento_suave_dark":  "#0c1e3d",
-        "acento_suave_light": "#dbeafe",
-    },
-    "verde": {
-        "nombre": "Verde natural",
-        "acento_dark":        "#22c55e",
-        "acento_light":       "#16a34a",
-        "acento_hover_dark":  "#4ade80",
-        "acento_hover_light": "#15803d",
-        "acento_suave_dark":  "#052e16",
-        "acento_suave_light": "#dcfce7",
-    },
-    "rojo": {
-        "nombre": "Rojo energía",
-        "acento_dark":        "#ef4444",
-        "acento_light":       "#dc2626",
-        "acento_hover_dark":  "#f87171",
-        "acento_hover_light": "#b91c1c",
-        "acento_suave_dark":  "#450a0a",
-        "acento_suave_light": "#fee2e2",
-    },
-    "purpura": {
-        "nombre": "Púrpura moderno",
-        "acento_dark":        "#a855f7",
-        "acento_light":       "#9333ea",
-        "acento_hover_dark":  "#c084fc",
-        "acento_hover_light": "#7e22ce",
-        "acento_suave_dark":  "#2e1065",
-        "acento_suave_light": "#f3e8ff",
-    },
+_PALETA = {
+    "nombre": "Combos Flash",
+    "acento_dark":        "#ff4757",
+    "acento_hover_dark":  "#ff6b7a",
+    "acento_suave_dark":  "#3d0c10",
+    "acento_borde_dark":  "#a34850",
+    "acento_light":       "#ed1c24",
+    "acento_hover_light": "#c4111a",
+    "acento_suave_light": "#fde5e7",
+    "acento_borde_light": "#f0a4a8",
 }
 
-PALETAS_ORDEN = ["dorado", "azul", "verde", "rojo", "purpura"]
+PALETAS = {"rojo": _PALETA}
+PALETAS_ORDEN = ["rojo"]
 
-
-# ---------- Neutros (independientes de la paleta) ----------
 
 _NEUTROS_OSCURO = {
     "COLOR_FONDO":         "#0a0a0a",
@@ -108,8 +66,8 @@ _NEUTROS_OSCURO = {
         "amarillo": "#854d0e",
         "rojo":     "#991b1b",
     },
-    "SOMBRA_CARD":  "#00000099",
-    "SOMBRA_SUAVE": "#00000066",
+    "SOMBRA_CARD":  "#00000066",
+    "SOMBRA_SUAVE": "#00000040",
 }
 
 _NEUTROS_CLARO = {
@@ -140,15 +98,12 @@ _NEUTROS_CLARO = {
         "amarillo": "#fde68a",
         "rojo":     "#fca5a5",
     },
-    "SOMBRA_CARD":  "#0000001a",
-    "SOMBRA_SUAVE": "#0000000f",
+    "SOMBRA_CARD":  "#0000000d",
+    "SOMBRA_SUAVE": "#00000008",
 }
 
 
-# ---------- Estado ----------
-
-_MODO_ACTUAL   = "oscuro"
-_PALETA_ACTUAL = "dorado"
+_MODO_ACTUAL = "claro"
 
 
 def modo_actual() -> str:
@@ -156,7 +111,7 @@ def modo_actual() -> str:
 
 
 def paleta_actual() -> str:
-    return _PALETA_ACTUAL
+    return "rojo"
 
 
 def es_oscuro() -> bool:
@@ -164,24 +119,21 @@ def es_oscuro() -> bool:
 
 
 def aplicar_tema(modo: str = None, paleta: str = None) -> None:
-    """Aplica la combinación paleta + modo. Retro-compatible:
-    aplicar_tema('oscuro') sigue funcionando."""
-    global _MODO_ACTUAL, _PALETA_ACTUAL
-    if paleta is not None and paleta in PALETAS:
-        _PALETA_ACTUAL = paleta
+    global _MODO_ACTUAL
     if modo is not None and modo in ("claro", "oscuro"):
         _MODO_ACTUAL = modo
 
-    p = PALETAS[_PALETA_ACTUAL]
+    p = _PALETA
     suf = "dark" if _MODO_ACTUAL == "oscuro" else "light"
     neutros = _NEUTROS_OSCURO if _MODO_ACTUAL == "oscuro" else _NEUTROS_CLARO
 
     for k, v in neutros.items():
         globals()[k] = v
 
-    globals()["COLOR_ACENTO"]       = p[f"acento_{suf}"]
-    globals()["COLOR_ACENTO_HOVER"] = p[f"acento_hover_{suf}"]
-    globals()["COLOR_ACENTO_SUAVE"] = p[f"acento_suave_{suf}"]
+    globals()["COLOR_ACENTO"]        = p[f"acento_{suf}"]
+    globals()["COLOR_ACENTO_HOVER"]  = p[f"acento_hover_{suf}"]
+    globals()["COLOR_ACENTO_SUAVE"]  = p[f"acento_suave_{suf}"]
+    globals()["COLOR_ACENTO_BORDE"]  = p[f"acento_borde_{suf}"]
 
     globals()["GRADIENTE_FONDO"] = (
         [_NEUTROS_OSCURO["COLOR_FONDO"], p["acento_suave_dark"],
@@ -192,22 +144,23 @@ def aplicar_tema(modo: str = None, paleta: str = None) -> None:
     )
 
 
-# Compatibilidad: aplicar paleta por defecto al importar
-aplicar_tema("oscuro", "dorado")
+aplicar_tema("claro")
 
 
 # ============================================================
 # Helpers TextField
 # ============================================================
 
-_FALLBACK_BORDE  = "#3a3a3a"
-_FALLBACK_ACENTO = "#d4af37"
+_FALLBACK_BORDE  = "#c9c5b8"
+_FALLBACK_ACENTO = "#ed1c24"
+_FALLBACK_FOCO   = "#f0a4a8"
 
 
 def borde_textfield(radio: int = 12, color=None, color_foco=None) -> dict:
     color = color or globals().get("COLOR_BORDE_FUERTE") or _FALLBACK_BORDE
-    color_foco = (color_foco or globals().get("COLOR_ACENTO")
-                  or _FALLBACK_ACENTO)
+    color_foco = (color_foco
+                  or globals().get("COLOR_ACENTO_BORDE")
+                  or _FALLBACK_FOCO)
 
     outline_cls = getattr(ft, "OutlineInputBorder", None)
     side_cls    = getattr(ft, "BorderSide", None)
@@ -222,7 +175,7 @@ def borde_textfield(radio: int = 12, color=None, color_foco=None) -> dict:
                         border_side=side_cls(1, color)),
                     cs_cls.FOCUSED: outline_cls(
                         border_radius=radio,
-                        border_side=side_cls(2, color_foco)),
+                        border_side=side_cls(1.5, color_foco)),
                 }}
             except Exception:
                 pass
@@ -241,16 +194,25 @@ def borde_textfield(radio: int = 12, color=None, color_foco=None) -> dict:
         "focused_border_color": color_foco,
         "border_radius": radio,
         "border_width": 1,
-        "focused_border_width": 2,
+        "focused_border_width": 1.5,
     }
 
 
-def estilo_textfield(radio: int = 12, color=None, color_foco=None) -> dict:
+def estilo_textfield(radio: int = 12, color=None, color_foco=None,
+                     label_color=None) -> dict:
+    """
+    Estilo de TextField. El label va en COLOR_ACENTO (rojo) por
+    defecto para que se vea la identidad de marca.
+    """
     base = dict(borde_textfield(radio, color, color_foco))
-    foco = color_foco or globals().get("COLOR_ACENTO") or _FALLBACK_ACENTO
-    base["cursor_color"] = foco
-    base["selection_color"] = ft.Colors.with_opacity(0.4, foco)
+    foco = color_foco or globals().get("COLOR_ACENTO_BORDE") or _FALLBACK_FOCO
+    acento = globals().get("COLOR_ACENTO") or _FALLBACK_ACENTO
+
+    base["cursor_color"] = acento
+    base["selection_color"] = ft.Colors.with_opacity(0.25, foco)
     base["filled"] = False
+    # El label en rojo de marca (o el color explícito si se pasa)
+    base["label_style"] = ft.TextStyle(color=label_color or acento)
     return base
 
 
@@ -285,10 +247,6 @@ def estilo_boton_marca(bgcolor=None, color_texto=None,
             radius=ft.BorderRadius.all(radio)),
     )
 
-
-# ============================================================
-# Monedas
-# ============================================================
 
 MONEDAS_INFO = {
     "CUP": {"simbolo": "$",    "etiqueta": "CUP"},

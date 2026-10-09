@@ -19,7 +19,7 @@ from ui.componentes import (
     campo_busqueda, empty_state, snack, bottom_sheet, mounted,
     toast, copiar_portapapeles,
 )
-
+from ui._scroll import columna_scroll
 
 PASO_PAGINACION = 40
 
@@ -44,7 +44,7 @@ def vista_pos(app):
         app._carrito_pos = ven.nuevo_carrito()
 
     estado = {"filtro": "", "cat": None, "visibles": PASO_PAGINACION}
-    lista = ft.Column(spacing=8, scroll=ft.ScrollMode.AUTO, expand=True)
+    lista = columna_scroll("/pos", app, [], spacing=8)
     contenedor_carrito = ft.Container()
 
     # ─── BÚSQUEDA ───

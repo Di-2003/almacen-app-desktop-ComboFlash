@@ -4,6 +4,10 @@ Generación del Excel completo (móvil, en memoria).
 Hojas por local: incluye columnas de moneda original y CUP.
 Movimientos: CUP histórico del momento.
 Ventas_<Local> y VentasGenerales: sin cambios.
+
+EXTRAS P1-Flet:
+  - generar_excel_salidas_hoy(): exporta TODAS las SALIDA del día
+    actual SIN filtrar por motivo.
 """
 import io
 from datetime import datetime
@@ -193,7 +197,6 @@ def _hoja_productos_local(ws, local):
         venta_total += pv_tot
         margen_total += margen
 
-        # Si la moneda es CUP, mostrar el mismo valor en orig y CUP
         moneda_txt = f"{mc}/{mv}" if mc != mv else mc
         pc_orig_mostrar = pc_orig if mc != "CUP" else pc_cup
         pu_orig_mostrar = pu_orig if mv != "CUP" else pu_cup
@@ -225,7 +228,6 @@ def _hoja_productos_local(ws, local):
                 c.alignment = Alignment(horizontal="left",
                                         vertical="center", indent=1)
 
-    # Fila totales
     fila_tot = FILA_HEADER + 1 + len(productos)
     c = ws.cell(row=fila_tot, column=1, value="TOTALES")
     c.font = Font(bold=True)
@@ -507,3 +509,335 @@ def _ventas_por_mes_historico() -> dict:
         ).fetchall()
     return {(int(r["anio"]), int(r["mes"])): float(r["venta"] or 0.0)
             for r in filas}
+
+
+# ============================================================
+# EXPORT ESPECIAL: TODAS las SALIDAS del día actual
+# ============================================================
+
+def generar_excel_salidas_hoy(local_id=None) -> bytes:
+    """
+    Bytes de un .xlsx con TODAS las SALIDA del día actual,
+    SIN filtrar por motivo. Útil para cuadre diario.
+
+    Si `local_id` es None o GENERAL_ID → todas las locales.
+    Lanza ValueError si no hay ninguna salida hoy.
+    """
+    hoy = datetime.now().strftime("%Y-%m-%d")
+
+    sql = (
+        "SELECT m.fecha, m.cantidad, m.motivo, m.rebaja, "
+        "       m.precio_unitario_momento, m.usuario, "
+        "       p.nombre AS producto, p.codigo AS codigo, "
+        "       l.nombre AS local "
+        "FROM movimientos m "
+        "JOIN productos p ON p.id=m.producto_id "
+        "JOIN locales l ON l.id=m.local_id "
+        "WHERE m.tipo='SALIDA' AND DATE(m.fecha)=?"
+    )
+    params = [hoy]
+    if local_id is not None and local_id != GENERAL_ID:
+        sql += " AND m.local_id=?"
+        params.append(local_id)
+    sql += " ORDER BY m.fecha ASC, m.id ASC"
+
+    with get_conn() as conn:
+        filas = conn.execute(sql, tuple(params)).fetchall()
+    salidas = [dict(r) for r in filas]
+
+    if not salidas:
+        raise ValueError("No hay salidas registradas hoy")
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Salidas del día"
+
+    # ── Título ──
+    titulo = f"Salidas del día — {hoy}"
+    if local_id is not None and local_id != GENERAL_ID:
+        titulo += f" — {salidas[0]['local']}"
+    else:
+        titulo += " — Todos los locales"
+    ws["A1"] = titulo
+    ws["A1"].font = Font(bold=True, size=13, color=COLOR_TITULO)
+    ws.merge_cells("A1:I1")
+    ws.row_dimensions[1].height = 26
+
+    # ── Encabezados ──
+    FILA_HEADER = 3
+    _encabezado(ws, FILA_HEADER, [
+        "Código", "Producto", "Cantidad", "Precio Unit.",
+        "Rebaja U.", "Motivo", "Hora", "Usuario", "Local",
+    ])
+
+    # ── Filas ──
+    total_unidades = 0.0
+    total_valor = 0.0
+    fila = FILA_HEADER
+    for s in salidas:
+        fila += 1
+        cant = float(s["cantidad"] or 0)
+        reb = float(s["rebaja"] or 0)
+        pu = float(s["precio_unitario_momento"] or 0)
+        total = (pu - reb) * cant
+        total_unidades += cant
+        total_valor += total
+
+        partes = (s["fecha"] or "").split(" ")
+        hora = partes[1][:5] if len(partes) > 1 else ""
+
+        valores = [
+            s.get("codigo") or "",
+            s["producto"],
+            cant,
+            _r2(pu),
+            _r2(reb),
+            s["motivo"] or "",
+            hora,
+            s["usuario"],
+            s.get("local") or "",
+        ]
+        for col, val in enumerate(valores, 1):
+            c = ws.cell(row=fila, column=col, value=val)
+            c.border = BORDE_FINO
+            if col in (3, 4, 5, 7):
+                c.alignment = Alignment(horizontal="center",
+                                        vertical="center")
+                if col in (4, 5):
+                    c.number_format = '#,##0.00'
+            else:
+                c.alignment = Alignment(horizontal="left",
+                                        vertical="center", indent=1)
+
+    # ── Totales ──
+    fila += 1
+    c = ws.cell(row=fila, column=1, value="TOTAL DEL DÍA")
+    c.font = Font(bold=True, color=COLOR_TITULO)
+    c.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+    c.border = BORDE_FINO
+
+    c = ws.cell(row=fila, column=3, value=total_unidades)
+    c.font = Font(bold=True)
+    c.alignment = Alignment(horizontal="center", vertical="center")
+    c.border = BORDE_FINO
+    c.number_format = '#,##0.00'
+
+    c = ws.cell(row=fila, column=4, value=round(total_valor, 2))
+    c.font = Font(bold=True)
+    c.alignment = Alignment(horizontal="center", vertical="center")
+    c.border = BORDE_FINO
+    c.number_format = '#,##0.00'
+
+    for col in (2, 5, 6, 7, 8, 9):
+        ws.cell(row=fila, column=col).border = BORDE_FINO
+
+    relleno = PatternFill("solid", fgColor=COLOR_TOTAL_BG)
+    for col in range(1, 10):
+        ws.cell(row=fila, column=col).fill = relleno
+
+    # ── Anchos ──
+    _anchos(ws, [12, 32, 10, 12, 10, 20, 8, 12, 16])
+    ws.freeze_panes = f"A{FILA_HEADER + 1}"
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+# ============================================================
+# EXPORT ESPECIAL: EXCEL DIARIO (una hoja por local + resumen)
+# ============================================================
+
+def generar_excel_diario() -> bytes:
+    """
+    Excel del día actual con:
+      - Hoja "Resumen": totales por local (entradas/salidas/bajas/venta/merma).
+      - Una hoja por cada local activo con sus movimientos del día.
+    """
+    hoy = datetime.now().strftime("%Y-%m-%d")
+    locales_activos = loc.listar_locales(solo_activos=True)
+
+    wb = Workbook()
+
+    # Hoja Resumen
+    ws_res = wb.active
+    ws_res.title = "Resumen"
+    _hoja_resumen_diario(ws_res, hoy, locales_activos)
+
+    # Una hoja por local
+    usados = {"resumen"}
+    for local in locales_activos:
+        nombre_hoja = _sanitizar(local["nombre"], usados)
+        ws = wb.create_sheet(nombre_hoja)
+        _hoja_local_diaria(ws, local, hoy)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def _hoja_resumen_diario(ws, hoy, locales):
+    _titulo_hoja(ws, 7, f"Resumen diario — {hoy}")
+
+    FILA_HEADER = 3
+    _encabezado(ws, FILA_HEADER, [
+        "Local", "Entradas", "Salidas", "Bajas",
+        "Ventas (CUP)", "Merma (CUP)", "Total movs",
+    ])
+
+    fila = FILA_HEADER
+    tot_ent = tot_sal = tot_baj = 0
+    tot_venta = tot_merma = 0.0
+
+    with get_conn() as conn:
+        for local in locales:
+            fila += 1
+            lid = local["id"]
+
+            ent = conn.execute(
+                "SELECT COUNT(*) AS n FROM movimientos "
+                "WHERE local_id=? AND tipo='ENTRADA' AND DATE(fecha)=?",
+                (lid, hoy)).fetchone()["n"]
+            sal = conn.execute(
+                "SELECT COUNT(*) AS n FROM movimientos "
+                "WHERE local_id=? AND tipo='SALIDA' AND DATE(fecha)=?",
+                (lid, hoy)).fetchone()["n"]
+            baj = conn.execute(
+                "SELECT COUNT(*) AS n FROM movimientos "
+                "WHERE local_id=? AND tipo='BAJA' AND DATE(fecha)=?",
+                (lid, hoy)).fetchone()["n"]
+            venta = conn.execute(
+                "SELECT COALESCE(SUM((precio_unitario_momento - rebaja) "
+                "* cantidad), 0) AS t FROM movimientos "
+                "WHERE local_id=? AND tipo='SALIDA' AND DATE(fecha)=?",
+                (lid, hoy)).fetchone()["t"]
+            merma = conn.execute(
+                "SELECT COALESCE(SUM((precio_unitario_momento - rebaja) "
+                "* cantidad), 0) AS t FROM movimientos "
+                "WHERE local_id=? AND tipo='SALIDA' "
+                "AND LOWER(TRIM(COALESCE(motivo,'')))='merma' "
+                "AND DATE(fecha)=?",
+                (lid, hoy)).fetchone()["t"]
+
+            valores = [
+                local["nombre"], ent, sal, baj,
+                _r2(venta), _r2(merma), ent + sal + baj,
+            ]
+            for col, val in enumerate(valores, 1):
+                c = ws.cell(row=fila, column=col, value=val)
+                c.border = BORDE_FINO
+                if col == 1:
+                    c.alignment = Alignment(horizontal="left",
+                                            vertical="center", indent=1)
+                elif col in (2, 3, 4, 7):
+                    c.alignment = Alignment(horizontal="center",
+                                            vertical="center")
+                else:
+                    c.alignment = Alignment(horizontal="right",
+                                            vertical="center")
+                    c.number_format = '#,##0.00'
+
+            tot_ent += ent
+            tot_sal += sal
+            tot_baj += baj
+            tot_venta += float(venta or 0)
+            tot_merma += float(merma or 0)
+
+    # Fila TOTAL
+    fila += 1
+    c = ws.cell(row=fila, column=1, value="TOTAL")
+    c.font = Font(bold=True, color=COLOR_TITULO)
+    c.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+    c.border = BORDE_FINO
+
+    for col, val in [(2, tot_ent), (3, tot_sal),
+                     (4, tot_baj), (7, tot_ent + tot_sal + tot_baj)]:
+        c = ws.cell(row=fila, column=col, value=val)
+        c.font = Font(bold=True)
+        c.alignment = Alignment(horizontal="center", vertical="center")
+        c.border = BORDE_FINO
+
+    for col, val in [(5, tot_venta), (6, tot_merma)]:
+        c = ws.cell(row=fila, column=col, value=_r2(val))
+        c.font = Font(bold=True)
+        c.alignment = Alignment(horizontal="right", vertical="center")
+        c.number_format = '#,##0.00'
+        c.border = BORDE_FINO
+
+    relleno = PatternFill("solid", fgColor=COLOR_TOTAL_BG)
+    for col in range(1, 8):
+        ws.cell(row=fila, column=col).fill = relleno
+
+    _anchos(ws, [26, 11, 11, 10, 14, 14, 12])
+    ws.freeze_panes = f"A{FILA_HEADER + 1}"
+
+
+def _hoja_local_diaria(ws, local, hoy):
+    _titulo_hoja(ws, 8, f"{local['nombre']} — {hoy}")
+
+    with get_conn() as conn:
+        filas = conn.execute(
+            "SELECT m.fecha, m.tipo, m.cantidad, m.motivo, m.rebaja, "
+            "m.precio_unitario_momento, m.usuario, "
+            "p.nombre AS producto, p.codigo AS codigo "
+            "FROM movimientos m JOIN productos p ON p.id=m.producto_id "
+            "WHERE m.local_id=? AND DATE(m.fecha)=? "
+            "AND m.tipo IN ('ENTRADA','SALIDA','BAJA') "
+            "ORDER BY m.fecha ASC, m.id ASC",
+            (local["id"], hoy)).fetchall()
+    movs = [dict(r) for r in filas]
+
+    FILA_HEADER = 3
+    _encabezado(ws, FILA_HEADER, [
+        "Hora", "Tipo", "Código", "Producto",
+        "Cantidad", "Precio Unit.", "Motivo", "Usuario",
+    ])
+
+    if not movs:
+        fila = FILA_HEADER + 1
+        c = ws.cell(row=fila, column=1,
+                    value="Sin movimientos registrados hoy.")
+        c.font = Font(italic=True, color="FF888888")
+        c.alignment = Alignment(horizontal="left", vertical="center",
+                                indent=1)
+        ws.merge_cells(start_row=fila, start_column=1,
+                       end_row=fila, end_column=8)
+        _anchos(ws, [10, 12, 12, 32, 10, 12, 20, 12])
+        return
+
+    fila = FILA_HEADER
+    for m in movs:
+        fila += 1
+        cant = float(m["cantidad"] or 0)
+        pu = float(m["precio_unitario_momento"] or 0)
+
+        partes = (m["fecha"] or "").split(" ")
+        hora = partes[1][:8] if len(partes) > 1 else ""
+
+        valores = [
+            hora,
+            m["tipo"],
+            m.get("codigo") or "",
+            m["producto"],
+            cant,
+            _r2(pu) if m["tipo"] in ("SALIDA", "BAJA") else "",
+            m["motivo"] or "",
+            m["usuario"],
+        ]
+        for col, val in enumerate(valores, 1):
+            c = ws.cell(row=fila, column=col, value=val)
+            c.border = BORDE_FINO
+            if col in (1, 2, 3, 5):
+                c.alignment = Alignment(horizontal="center",
+                                        vertical="center")
+            elif col == 6:
+                c.alignment = Alignment(horizontal="right",
+                                        vertical="center")
+                if val != "":
+                    c.number_format = '#,##0.00'
+            else:
+                c.alignment = Alignment(horizontal="left",
+                                        vertical="center", indent=1)
+
+    _anchos(ws, [10, 12, 12, 32, 10, 12, 20, 12])
+    ws.freeze_panes = f"A{FILA_HEADER + 1}"
+

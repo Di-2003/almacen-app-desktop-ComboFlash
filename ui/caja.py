@@ -8,11 +8,11 @@ from ui import estilos as es
 from ui.componentes import (
     snack, empty_state, bottom_sheet, mounted,
 )
-
+from ui._scroll import columna_scroll
 
 def vista_caja(app):
     page = app.page
-    lista = ft.Column(spacing=10, scroll=ft.ScrollMode.AUTO, expand=True)
+    lista = columna_scroll("/caja", app, [], spacing=10)
     sesion_actual = ft.Container()
 
     def refrescar():

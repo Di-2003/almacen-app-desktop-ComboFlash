@@ -9,12 +9,13 @@ from ui import estilos as es
 from ui.componentes import (
     campo_busqueda, empty_state, snack, bottom_sheet, mounted,
 )
+from ui._scroll import columna_scroll
 
 
 def vista_ordenes(app):
     page = app.page
     estado = {"filtro": "", "estado": None, "limite": 50}
-    lista = ft.Column(spacing=8, scroll=ft.ScrollMode.AUTO, expand=True)
+    lista = columna_scroll("/ordenes", app, [], spacing=8)
 
     def rebuild():
         lista.controls.clear()

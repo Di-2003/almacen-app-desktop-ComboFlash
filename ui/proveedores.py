@@ -7,12 +7,13 @@ from ui import estilos as es
 from ui.componentes import (
     campo_busqueda, empty_state, snack, bottom_sheet, mounted, toast,
 )
+from ui._scroll import columna_scroll
 
 
 def vista_proveedores(app):
     page = app.page
     estado = {"filtro": "", "ver_con_saldo": False}
-    lista = ft.Column(spacing=8, scroll=ft.ScrollMode.AUTO, expand=True)
+    lista = columna_scroll("/proveedores", app, [], spacing=8)
 
     def refrescar():
         lista.controls.clear()

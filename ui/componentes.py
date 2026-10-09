@@ -8,15 +8,26 @@ def ruta_asset(nombre: str) -> str:
     base = os.environ.get("FLET_ASSETS_DIR")
     if base:
         return str(Path(base) / nombre)
-    return f"recursos/{nombre}"
+    raiz = Path(__file__).resolve().parent.parent
+    return str(raiz / "assets" / nombre)   # ← "recursos" → "assets"
+
+
+def src_asset(nombre: str) -> str:
+    """
+    Nombre para ft.Image(src=...).
+    Flet lo resuelve contra assets_dir ('recursos'), así que aquí
+    va SOLO el nombre del archivo, sin la carpeta.
+    """
+    return nombre
 
 
 def imagen_opcional(nombre, fallback, width=None, height=None,
                     fit=ft.BoxFit.CONTAIN):
-    ruta = ruta_asset(nombre)
     try:
-        if Path(ruta).exists():
-            return ft.Image(src=ruta, fit=fit, width=width, height=height)
+        if Path(ruta_asset(nombre)).exists():
+            # src es relativo a assets_dir → solo el nombre
+            return ft.Image(src=src_asset(nombre), fit=fit,
+                            width=width, height=height)
     except Exception:
         pass
     return fallback
@@ -514,6 +525,7 @@ def mostrar_modal(page, contenido, on_close=None):
 
     return cerrar
 
+
 async def _copiar_async(page, texto) -> bool:
     """Copia texto al portapapeles probando los dos APIs de Flet."""
     # API nuevo (Flet >= 0.27): page.clipboard.set() async
@@ -592,6 +604,3 @@ def _mostrar_texto_para_copiar(page, texto):
         ))
     except Exception:
         pass
-    
-    
-

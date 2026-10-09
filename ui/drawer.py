@@ -45,12 +45,28 @@ def construir_drawer_panel(app):
             app.cerrar_sesion()
         page.run_task(_nav)
 
+    # ── Tasks de exportación (async, con delay para cerrar el drawer) ──
+
     async def task_exportar_excel(e):
         cerrar()
         import asyncio
         await asyncio.sleep(0.12)
         from ui.exportar import exportar_excel
         await exportar_excel(app)
+
+    async def task_exportar_excel_diario(e):
+        cerrar()
+        import asyncio
+        await asyncio.sleep(0.12)
+        from ui.exportar import exportar_excel_diario
+        await exportar_excel_diario(app)
+
+    async def task_exportar_salidas(e):
+        cerrar()
+        import asyncio
+        await asyncio.sleep(0.12)
+        from ui.exportar import exportar_salidas_hoy
+        await exportar_salidas_hoy(app)
 
     async def task_backup_interno(e):
         cerrar()
@@ -61,6 +77,12 @@ def construir_drawer_panel(app):
 
     def cb_excel(e):
         page.run_task(task_exportar_excel, e)
+
+    def cb_excel_diario(e):
+        page.run_task(task_exportar_excel_diario, e)
+
+    def cb_salidas(e):
+        page.run_task(task_exportar_salidas, e)
 
     def cb_backup_interno(e):
         page.run_task(task_backup_interno, e)
@@ -140,6 +162,10 @@ def construir_drawer_panel(app):
     if rol in ("admin", "almacen"):
         tiles.append(tile(ft.Icons.TABLE_CHART, "Exportar Excel",
                           cb_excel, color=es.COLOR_EXITO))
+        tiles.append(tile(ft.Icons.CALENDAR_MONTH, "Exportar Excel diario",
+                          cb_excel_diario, color=es.COLOR_INFO))
+        tiles.append(tile(ft.Icons.LIST_ALT, "Exportar salidas del día",
+                          cb_salidas, color=es.COLOR_AMBAR))
         tiles.append(tile(ft.Icons.SAVE, "Hacer backup rápido",
                           cb_backup_interno))
 

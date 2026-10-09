@@ -1,15 +1,10 @@
 """
 Exportación e importación de datos.
 
-Flujo:
-  1. "Backup Destino": el usuario elige UNA carpeta donde se
-     guardarán los backups. Se guarda como preferencia.
-  2. "Backup Interno": guarda el .db en esa carpeta (con nombre
-     automático). Como Android 11+ usa SAF, se abre el diálogo
-     de guardado ya con el nombre relleno.
-
 - Excel completo (hojas fijas + una por local).
+- Excel de SALIDAS DEL DÍA (todas, sin filtrar motivo).
 - Importar copia de seguridad (con confirmación por contraseña).
+- Backup Destino / Interno (SAF Android; en desktop usa FilePicker).
 """
 import shutil
 from datetime import datetime
@@ -34,7 +29,6 @@ BACKUP_CARPETA_KEY = "backup_carpeta"
 # ============================================================
 
 def _cerrar_picker(page, fp):
-    """Quita el FilePicker de los servicios y refresca."""
     try:
         page.services.remove(fp)
     except Exception:
@@ -51,7 +45,6 @@ def _nombre_backup() -> str:
 
 
 def get_carpeta_destino() -> str | None:
-    """Devuelve la carpeta configurada, o None."""
     try:
         return inv.get_config(BACKUP_CARPETA_KEY)
     except Exception:
@@ -59,7 +52,7 @@ def get_carpeta_destino() -> str | None:
 
 
 # ============================================================
-# 1. Exportar Excel
+# 1. Exportar Excel completo
 # ============================================================
 
 async def exportar_excel(app):
@@ -90,6 +83,51 @@ async def exportar_excel(app):
 
     if ruta:
         snack(page, f"Excel guardado ({len(data):,} bytes)", "ok")
+    else:
+        snack(page, "Guardado cancelado", "info")
+
+
+# ============================================================
+# 1.b. Exportar SOLO salidas del día (sin filtrar motivo)
+# ============================================================
+
+async def exportar_salidas_hoy(app):
+    """
+    Exporta TODAS las salidas del día actual (cualquier motivo)
+    para cuadre diario.
+    """
+    page = app.page
+
+    try:
+        local = (None if app.es_general() else app.local_id)
+        data = excel.generar_excel_salidas_hoy(local_id=local)
+    except ValueError:
+        snack(page, "No hay salidas registradas hoy", "info")
+        return
+    except Exception as ex:
+        snack(page, f"Error al generar: {ex}", "error")
+        return
+
+    nombre = f"salidas_{datetime.now().strftime('%Y-%m-%d')}.xlsx"
+
+    fp = ft.FilePicker()
+    page.services.append(fp)
+    page.update()
+
+    try:
+        ruta = await fp.save_file(
+            file_name=nombre,
+            allowed_extensions=["xlsx"],
+            src_bytes=data,
+        )
+    except Exception as ex:
+        snack(page, f"Error al guardar: {ex}", "error")
+        _cerrar_picker(page, fp)
+        return
+    _cerrar_picker(page, fp)
+
+    if ruta:
+        snack(page, f"Salidas guardadas ({len(data):,} bytes)", "ok")
     else:
         snack(page, "Guardado cancelado", "info")
 
@@ -187,27 +225,70 @@ def _confirmar_import(app, data):
 
 
 def _hacer_import(app, data):
+    """
+    Importa una BD .db reemplazando la actual.
+
+    Escribe primero a un archivo temporal y luego usa os.replace()
+    para el reemplazo atómico. Esto evita [Errno 22] cuando SQLite
+    tiene el archivo original abierto.
+    """
     page = app.page
     try:
+        from rutas import DB_PATH, BACKUPS
+        import gc
+        import os
+
+        # ── 1. Forzar recolección (cierra conexiones huérfanas) ──
+        gc.collect()
+
+        # ── 2. Backup del actual ──
         if DB_PATH.exists():
             sello = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-            destino = (BACKUPS /
-                       f"almacen_antes_de_importar_{sello}.db")
-            shutil.copy2(DB_PATH, destino)
+            destino = BACKUPS / f"almacen_antes_de_importar_{sello}.db"
+            try:
+                BACKUPS.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(DB_PATH, destino)
+            except Exception as e:
+                print(f"[import] backup falló: {e}")
 
-        with open(DB_PATH, "wb") as f:
+        # ── 3. Borrar WAL/SHM huérfanos (SQLite en modo WAL) ──
+        for sufijo in ("-wal", "-shm"):
+            p = Path(str(DB_PATH) + sufijo)
+            try:
+                if p.exists():
+                    p.unlink()
+            except Exception as e:
+                print(f"[import] no pude borrar {p}: {e}")
+
+        # ── 4. Escribir la nueva BD a un archivo TEMPORAL ──
+        # Nunca sobrescribimos el original directamente; así si
+        # algo falla, la BD actual sigue intacta.
+        tmp_path = DB_PATH.with_name(DB_PATH.name + ".importing")
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except Exception:
+            pass
+
+        with open(tmp_path, "wb") as f:
             f.write(data)
 
+        # ── 5. Reemplazo ATÓMICO ──
+        # os.replace usa MoveFileEx en Windows: funciona incluso si
+        # el destino existe, siempre que no esté bloqueado en exclusiva.
+        os.replace(str(tmp_path), str(DB_PATH))
+
+        # ── 6. Reinicializar (por si el esquema necesita ajustes) ──
         inicializar_db()
+
     except Exception as ex:
+        import traceback
+        traceback.print_exc()
         snack(page, f"Error al importar: {ex}", "error")
         return
 
-    snack(page,
-          "Copia importada. Se cerrará la sesión.",
-          "ok")
+    snack(page, "Copia importada. Se cerrará la sesión.", "ok")
     app.cerrar_sesion()
-
 
 # ============================================================
 # 3. Backup Destino (elegir carpeta, se guarda)
@@ -215,9 +296,8 @@ def _hacer_import(app, data):
 
 async def backup_destino(app):
     """
-    Abre el selector nativo de carpetas (SAF). El usuario elige
-    la carpeta donde se guardarán los backups. Se guarda como
-    preferencia para que "Backup Interno" la use después.
+    Abre el selector nativo de carpetas (SAF).
+    El usuario elige dónde se guardarán los backups.
     """
     page = app.page
 
@@ -250,10 +330,6 @@ async def backup_destino(app):
 async def backup_interno(app):
     """
     Guarda el .db en la carpeta destino configurada.
-    Como Android 11+ no permite escribir silenciosamente en una
-    carpeta SAF (necesita confirmación del usuario), se abre el
-    diálogo de guardado con el nombre ya relleno.
-    El usuario solo tiene que tocar "Guardar".
     """
     page = app.page
 
@@ -318,3 +394,46 @@ def backup_ahora(app):
         snack(page, "Backup interno creado en backups/", "ok")
     else:
         snack(page, "Aún no hay BD que respaldar", "info")
+        
+# ============================================================
+# Excel DIARIO (una hoja por local)
+# ============================================================
+
+async def exportar_excel_diario(app):
+    """
+    Excel con todos los locales del día actual:
+      - Hoja "Resumen" con totales por local.
+      - Una hoja por cada local activo con sus movimientos.
+    """
+    page = app.page
+
+    try:
+        data = excel.generar_excel_diario()
+    except Exception as ex:
+        snack(page, f"Error al generar: {ex}", "error")
+        return
+
+    nombre = f"diario_{datetime.now().strftime('%Y-%m-%d')}.xlsx"
+
+    fp = ft.FilePicker()
+    page.services.append(fp)
+    page.update()
+
+    try:
+        ruta = await fp.save_file(
+            file_name=nombre,
+            allowed_extensions=["xlsx"],
+            src_bytes=data,
+        )
+    except Exception as ex:
+        snack(page, f"Error al guardar: {ex}", "error")
+        _cerrar_picker(page, fp)
+        return
+    _cerrar_picker(page, fp)
+
+    if ruta:
+        snack(page, f"Excel diario guardado ({len(data):,} bytes)", "ok")
+    else:
+        snack(page, "Guardado cancelado", "info")
+        
+

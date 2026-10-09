@@ -12,11 +12,15 @@ dependencies = [
 [tool.flet]
 product_name = "Almacen"
 package_name = "com.combosflash.almacen_raidel"
-icon = "recursos/icon.png"
-assets = ["recursos"]
+icon = "assets/icon.png"
+assets = ["assets"]
 
 [tool.flet.icons]
-android = "recursos/icon.png"
+android = "assets/icon.png"
+windows = "assets/icon.ico"    # ← .ico multi-resolución
+linux   = "assets/icon.png"
+macos   = "assets/icon.png"
+web     = "assets/icon.png"
 
 [tool.flet.flutter.pubspec.dependency_overrides]
 jni = "1.1.0"

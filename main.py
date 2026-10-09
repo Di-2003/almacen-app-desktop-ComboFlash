@@ -1,9 +1,9 @@
 import warnings
 
-# Silenciar TODOS los DeprecationWarning. Flet 1.0.3 emite cientos de
-# avisos por propiedades que se eliminarán en 1.3.
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", category=UserWarning, module=r"flet\..*")
+
+from pathlib import Path
 
 import flet as ft
 from db import inicializar_db, get_pref
@@ -11,9 +11,36 @@ from ui import estilos as es
 from ui.app import AlmacenApp
 
 
+def _ruta_icono_ventana() -> str | None:
+    """Windows necesita .ico para el icono de la ventana."""
+    raiz = Path(__file__).resolve().parent
+    # Preferir .ico; si no existe, intentar .png
+    for nombre in ("icon.ico", "icon.png"):
+        p = raiz / "assets" / nombre
+        if p.exists():
+            return str(p)
+    return None
+
+
 def main(page: ft.Page):
     page.title = "Almacen"
     page.padding = 0
+
+    # ── IMPORTANTE: setear el icono ANTES de cualquier otra cosa ──
+    icono = _ruta_icono_ventana()
+    if icono:
+        try:
+            page.window.icon = icono
+        except Exception as ex:
+            print(f"[icon] error: {ex}")
+
+    try:
+        page.window.width = 1280
+        page.window.height = 820
+        page.window.min_width = 900
+        page.window.min_height = 600
+    except Exception:
+        pass
 
     inicializar_db()
 
@@ -27,24 +54,14 @@ def main(page: ft.Page):
     try:
         page.theme = ft.Theme(color_scheme_seed=es.COLOR_ACENTO)
     except Exception:
-        try:
-            page.theme = ft.Theme(
-                color_scheme=ft.ColorScheme(primary=es.COLOR_ACENTO)
-            )
-        except Exception:
-            pass
+        pass
 
     page.theme_mode = (ft.ThemeMode.DARK if modo == "oscuro"
                        else ft.ThemeMode.LIGHT)
     page.bgcolor = es.COLOR_FONDO
 
-    try:
-        page.window.icon = "recursos/icon.png"
-    except Exception:
-        pass
-
     AlmacenApp(page).iniciar()
 
 
 if __name__ == "__main__":
-    ft.run(main, assets_dir="recursos")
+    ft.run(main, assets_dir="assets")

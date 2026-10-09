@@ -1,13 +1,12 @@
 """
 Perfil de usuario + configuración + administración + datos.
-Incluye accesos a POS, Clientes, Caja, Órdenes, Paletas y
-Configuración del negocio.
 """
 import flet as ft
 import inventario as inv
 from ui import estilos as es
 from ui.componentes import snack, imagen_opcional, cerrar_dialogo
 from ui.principal import barra_navegacion
+from ui._scroll import columna_scroll
 
 
 def _fmt_num(x) -> str:
@@ -93,6 +92,16 @@ async def _task_exportar_excel(app):
     await exportar_excel(app)
 
 
+async def _task_exportar_excel_diario(app):
+    from ui.exportar import exportar_excel_diario
+    await exportar_excel_diario(app)
+
+
+async def _task_exportar_salidas(app):
+    from ui.exportar import exportar_salidas_hoy
+    await exportar_salidas_hoy(app)
+
+
 async def _task_importar_backup(app):
     from ui.exportar import importar_backup
     await importar_backup(app)
@@ -104,9 +113,6 @@ def vista_perfil(app):
 
     def abrir_perfil(e):
         _modal_editar_perfil(app)
-
-    def abrir_umbrales(e):
-        app.ir("/umbrales")
 
     def abrir_usuarios(e):
         app.ir("/usuarios")
@@ -123,7 +129,7 @@ def vista_perfil(app):
             inv.set_config("tema", nuevo)
         except Exception:
             pass
-        es.aplicar_tema(modo=nuevo, paleta=es.paleta_actual())
+        es.aplicar_tema(modo=nuevo)
         page.theme_mode = (ft.ThemeMode.DARK if nuevo == "oscuro"
                         else ft.ThemeMode.LIGHT)
         page.bgcolor = es.COLOR_FONDO
@@ -142,6 +148,12 @@ def vista_perfil(app):
 
     def cb_exportar_excel(e):
         page.run_task(_task_exportar_excel, app)
+
+    def cb_exportar_excel_diario(e):
+        page.run_task(_task_exportar_excel_diario, app)
+
+    def cb_exportar_salidas(e):
+        page.run_task(_task_exportar_salidas, app)
 
     def cb_importar_backup(e):
         page.run_task(_task_importar_backup, app)
@@ -190,17 +202,12 @@ def vista_perfil(app):
               color=es.COLOR_INFO),
     ]
 
-    # ── Configuración ──
     bloques += [
         ft.Container(height=16),
         _seccion_label("Configuración"),
         _tile_switch(ft.Icons.DARK_MODE, "Modo oscuro",
                      "Alternar entre tema claro y oscuro",
                      es.es_oscuro(), toggle_tema, color="#8b5cf6"),
-        _tile(ft.Icons.PALETTE, "Apariencia",
-              "Paleta de colores y modo claro/oscuro",
-              lambda e: app.ir("/paletas"),
-              color="#a855f7"),
         _tile(ft.Icons.VISIBILITY, "Moneda de visualización",
               sub_mon, configurar_moneda_visualizacion,
               color=es.COLOR_INFO),
@@ -214,7 +221,6 @@ def vista_perfil(app):
               color=es.COLOR_EXITO),
     ]
 
-       # ── Ventas y caja (admin/almacén) ──
     if u["rol"] in ("admin", "almacen"):
         bloques += [
             ft.Container(height=16),
@@ -245,7 +251,6 @@ def vista_perfil(app):
                   color=es.COLOR_PELIGRO),
         ]
 
-    # ── Administración ──
     if u["rol"] == "admin":
         bloques += [
             ft.Container(height=16),
@@ -271,14 +276,19 @@ def vista_perfil(app):
                   color=es.COLOR_INFO),
         ]
 
-    # ── Datos ──
     if u["rol"] in ("admin", "almacen"):
         bloques += [
             ft.Container(height=16),
             _seccion_label("Datos"),
-            _tile(ft.Icons.TABLE_CHART, "Exportar Excel",
-                  "Genera el libro completo con todos los locales",
+            _tile(ft.Icons.TABLE_CHART, "Exportar Excel completo",
+                  "Inventario + movimientos + ventas por local",
                   cb_exportar_excel, color=es.COLOR_EXITO),
+            _tile(ft.Icons.CALENDAR_MONTH, "Exportar Excel diario",
+                  "Resumen por local + movimientos del día (una hoja por local)",
+                  cb_exportar_excel_diario, color=es.COLOR_INFO),
+            _tile(ft.Icons.LIST_ALT, "Exportar salidas del día",
+                  "Todas las salidas de hoy (cualquier motivo)",
+                  cb_exportar_salidas, color=es.COLOR_AMBAR),
             _tile(ft.Icons.UPLOAD, "Importar copia de seguridad",
                   "Reemplaza la BD actual con un archivo .db",
                   cb_importar_backup, color=es.COLOR_AMBAR),
@@ -304,8 +314,7 @@ def vista_perfil(app):
     ]
 
     contenido = ft.Container(
-        content=ft.Column(controls=bloques, spacing=8,
-                          scroll=ft.ScrollMode.AUTO, expand=True),
+        content=columna_scroll("/perfil", app, bloques, spacing=8),
         padding=ft.Padding.all(16), expand=True)
 
     return ft.View(
@@ -316,8 +325,6 @@ def vista_perfil(app):
         navigation_bar=barra_navegacion(app, 4),
         bgcolor=es.COLOR_FONDO)
 
-
-# ============ Diálogo de tasa ============
 
 def _dlg_tasa(app, clave, titulo, label, moneda):
     page = app.page
@@ -373,8 +380,6 @@ def _dlg_tasa(app, clave, titulo, label, moneda):
     page.show_dialog(dlg)
 
 
-# ============ Diálogo de moneda visualización ============
-
 def _dlg_moneda_visualizacion(app):
     page = app.page
     actual = inv.get_moneda_visualizacion()
@@ -419,8 +424,6 @@ def _dlg_moneda_visualizacion(app):
     dlg_ref["dlg"] = dlg
     page.show_dialog(dlg)
 
-
-# ============ Editar perfil ============
 
 def _modal_editar_perfil(app):
     page = app.page
@@ -473,8 +476,8 @@ def _modal_editar_perfil(app):
     dlg = ft.AlertDialog(
         title=ft.Text("Editar perfil"),
         content=ft.Column([tf_u, tf_a, tf_n, tf_n2, error_lbl],
-                          tight=True, width=320, spacing=10,
-                          scroll=ft.ScrollMode.AUTO),
+                        tight=True, width=320, spacing=10,
+                        scroll=ft.ScrollMode.AUTO),
         actions=[
             ft.TextButton("Cancelar", on_click=cancelar),
             ft.FilledButton("Guardar", on_click=guardar,

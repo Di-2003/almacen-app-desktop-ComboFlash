@@ -1,17 +1,11 @@
 """
-Esquema de la base de datos SQLite v10.
+Esquema BD v10 + migración automática desde P1 (v4).
 
-NOVEDADES v10 (NO destructivas, conviven con v9):
-  - categorias_gastos  → categorías de gastos operativos
-  - gastos             → gastos operativos (con moneda + caja opcional)
-  - proveedores        → CRUD proveedores (globales)
-  - producto_proveedores → N:M producto↔proveedor (por nombre)
-  - pagos_proveedor    → pagos / abonos a proveedores
-  - movimientos.proveedor_id → de qué proveedor vino la ENTRADA
+Cuando abres una BD del P1 viejo (schema v4 sin `local_id`), se
+detecta y se migra IN-PLACE preservando usuarios, configuración,
+productos y movimientos.
 
-PERFORMANCE (sin cambios):
-  WAL, synchronous=NORMAL, cache_size=-20000, temp_store=MEMORY,
-  mmap_size=134217728, índices compuestos.
+Idempotente: si ya está en v10, no hace nada.
 """
 import sqlite3
 from datetime import datetime
@@ -47,9 +41,8 @@ SCHEMA = """
 PRAGMA foreign_keys = ON;
 
 -- ══════════════════════════════════════════════════════════════
--- TABLAS v8 (sin cambios)
+-- CORE
 -- ══════════════════════════════════════════════════════════════
-
 CREATE TABLE IF NOT EXISTS meta (
     clave TEXT PRIMARY KEY,
     valor TEXT NOT NULL
@@ -84,6 +77,9 @@ CREATE TABLE IF NOT EXISTS categorias (
     activo  INTEGER NOT NULL DEFAULT 1
 );
 
+-- ══════════════════════════════════════════════════════════════
+-- INVENTARIO
+-- ══════════════════════════════════════════════════════════════
 CREATE TABLE IF NOT EXISTS productos (
     id                    INTEGER PRIMARY KEY AUTOINCREMENT,
     local_id              INTEGER NOT NULL,
@@ -108,8 +104,7 @@ CREATE TABLE IF NOT EXISTS productos (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_prod_local_codigo
-    ON productos(local_id, codigo)
-    WHERE codigo IS NOT NULL;
+    ON productos(local_id, codigo) WHERE codigo IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_prod_local_nombre
     ON productos(local_id, nombre);
 CREATE INDEX IF NOT EXISTS idx_prod_categoria ON productos(categoria_id);
@@ -148,9 +143,8 @@ CREATE INDEX IF NOT EXISTS idx_mov_tipo_motivo
     ON movimientos(tipo, motivo);
 
 -- ══════════════════════════════════════════════════════════════
--- TABLAS v9 (POS + clientes + caja + métodos de pago)
+-- POS + CLIENTES + CAJA + MÉTODOS
 -- ══════════════════════════════════════════════════════════════
-
 CREATE TABLE IF NOT EXISTS clientes (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     nombre         TEXT NOT NULL COLLATE NOCASE,
@@ -286,9 +280,8 @@ CREATE TABLE IF NOT EXISTS metodos_pago (
 );
 
 -- ══════════════════════════════════════════════════════════════
--- TABLAS v10 (Gastos + Proveedores)
+-- GASTOS + PROVEEDORES (v10)
 -- ══════════════════════════════════════════════════════════════
-
 CREATE TABLE IF NOT EXISTS categorias_gastos (
     id      INTEGER PRIMARY KEY AUTOINCREMENT,
     nombre  TEXT UNIQUE NOT NULL COLLATE NOCASE,
@@ -368,7 +361,19 @@ CREATE INDEX IF NOT EXISTS idx_pagos_prov_fecha
 """
 
 
-def get_conn() -> sqlite3.Connection:
+# ============================================================
+# CONEXIÓN
+# ============================================================
+
+from contextlib import contextmanager
+
+@contextmanager
+def get_conn():
+    """
+    Conexión SQLite que se CIERRA AUTOMÁTICAMENTE al salir del with.
+    Antes era una función normal y la conexión quedaba abierta,
+    bloqueando el archivo en Windows.
+    """
     conn = sqlite3.connect(DB_PATH, timeout=15.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
@@ -377,155 +382,207 @@ def get_conn() -> sqlite3.Connection:
     conn.execute("PRAGMA temp_store = MEMORY")
     conn.execute("PRAGMA cache_size = -20000")
     conn.execute("PRAGMA mmap_size = 134217728")
-    return conn
-
-
-# ============================================================
-# Inicialización + migración
-# ============================================================
-
-def inicializar_db() -> None:
-    conn = get_conn()
     try:
-        with conn:
-            version = _leer_version(conn)
-            if version is None:
-                conn.executescript(SCHEMA)
-                _insertar_categorias_default(conn)
-                _insertar_categorias_gastos_default(conn)
-            elif version < 7:
-                _dropear_todo(conn)
-                conn.executescript(SCHEMA)
-                _insertar_categorias_default(conn)
-                _insertar_categorias_gastos_default(conn)
-            elif version == 7:
-                _migrar_v7_a_v8(conn)
-                _migrar_v8_a_v9(conn)
-                _migrar_v9_a_v10(conn)
-            elif version == 8:
-                _migrar_v8_a_v9(conn)
-                _migrar_v9_a_v10(conn)
-            elif version == 9:
-                _migrar_v9_a_v10(conn)
-
-            _asegurar_defaults(conn)
-            _asegurar_almacen(conn)
-            # IMPORTANTE: las columnas primero, luego los índices
-            _asegurar_columnas_v9(conn)
-            _asegurar_columnas_v10(conn)
-            _asegurar_indices_extra(conn)
-            _asegurar_metodos_pago(conn)
-            _marcar_version(conn)
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
-def _asegurar_columnas_v9(conn) -> None:
-    for tabla, col, defn in (
-        ("productos", "es_granel", "INTEGER NOT NULL DEFAULT 0"),
-    ):
-        try:
-            conn.execute(f"ALTER TABLE {tabla} ADD COLUMN {col} {defn}")
-        except sqlite3.OperationalError:
-            pass
+# ============================================================
+# INICIALIZACIÓN
+# ============================================================
+
+def inicializar_db() -> None:
+    with get_conn() as conn:
+        # 1) ¿Viene del P1 viejo (v4)? → migrar y salir.
+        if _detectar_schema_p1(conn):
+            _migrar_v4_a_v10(conn)
+            return
+
+        # 2) Ya en formato P2: ¿virgen o ya migrada?
+        version = _leer_version(conn)
+
+        if version is None:
+            conn.executescript(SCHEMA)
+            _insertar_categorias_default(conn)
+            _insertar_categorias_gastos_default(conn)
+        elif version != VERSION_ESQUEMA:
+            raise RuntimeError(
+                f"Versión de esquema inesperada: {version}. "
+                f"Esta versión solo soporta v{VERSION_ESQUEMA}. "
+                f"Restaura un backup compatible.")
+
+        _asegurar_defaults(conn)
+        _asegurar_almacen(conn)
+        _asegurar_columnas_extra(conn)
+        _asegurar_indices_extra(conn)
+        _asegurar_metodos_pago(conn)
+        _marcar_version(conn)
+
+# ============================================================
+# MIGRACIÓN P1 (v4) → P2 (v10)
+# ============================================================
+
+def _detectar_schema_p1(conn) -> bool:
+    """True si `productos` existe pero NO tiene `local_id` (P1 v4)."""
+    try:
+        rows = conn.execute("PRAGMA table_info(productos)").fetchall()
+    except sqlite3.OperationalError:
+        return False
+    if not rows:
+        return False
+    return "local_id" not in {r["name"] for r in rows}
 
 
-def _asegurar_columnas_v10(conn) -> None:
-    """Añade columnas nuevas v10 a tablas existentes."""
-    for tabla, col, defn in (
-        ("movimientos", "proveedor_id", "INTEGER"),
-    ):
-        try:
-            conn.execute(f"ALTER TABLE {tabla} ADD COLUMN {col} {defn}")
-        except sqlite3.OperationalError:
-            pass
+def _migrar_v4_a_v10(conn) -> None:
+    """
+    Migración P1 (v4) -> P2 (v10) preservando datos.
 
+    Estrategia:
+      1. Renombrar productos/movimientos viejos.
+      2. Ejecutar SCHEMA (crea las nuevas).
+      3. Insertar Almacén + categorías + métodos de pago.
+      4. Copiar productos viejos con código secuencial.
+      5. Copiar movimientos viejos.
+      6. Borrar tablas temporales.
+      7. Marcar versión = 10.
+    """
+    print("[migración] Detectado esquema P1 (v4). Migrando a v10...")
 
-def _asegurar_metodos_pago(conn) -> None:
-    for (clave, etiqueta, activo, orden, req_mon, es_cred,
-         cuenta, qr) in METODOS_PAGO_DEFAULT:
+    # 1) Renombrar
+    conn.execute("ALTER TABLE productos RENAME TO _productos_v4")
+    conn.execute("ALTER TABLE movimientos RENAME TO _movimientos_v4")
+
+    # 2) Crear schema v10
+    conn.executescript(SCHEMA)
+
+    # 3) Almacén + defaults
+    _asegurar_almacen(conn)
+    _insertar_categorias_default(conn)
+    _insertar_categorias_gastos_default(conn)
+    _asegurar_metodos_pago(conn)
+
+    almacen_id = conn.execute(
+        "SELECT id FROM locales WHERE es_almacen=1"
+    ).fetchone()["id"]
+
+    # 4) Copiar productos
+    cols_movs = {r["name"] for r in conn.execute(
+        "PRAGMA table_info(_movimientos_v4)").fetchall()}
+    tiene_precio_momento = "precio_unitario_mov" in cols_movs
+
+    productos_viejos = conn.execute(
+        "SELECT * FROM _productos_v4 ORDER BY id ASC"
+    ).fetchall()
+
+    codigos_usados = set()
+    ultimo_codigo = None
+    for i, p in enumerate(productos_viejos):
+        codigo = _generar_codigo_secuencial(i + 1)
+        while codigo in codigos_usados:
+            i += 1
+            codigo = _generar_codigo_secuencial(i + 1)
+        codigos_usados.add(codigo)
+        ultimo_codigo = codigo
+
+        precio_unit = float(p["precio_unitario"] or 0)
+        fecha_mod = p["fecha_ultima_mod"] or datetime.now().strftime(
+            "%Y-%m-%d %H:%M:%S")
+
         conn.execute(
-            "INSERT OR IGNORE INTO metodos_pago"
-            "(clave,etiqueta,activo,orden,requiere_moneda,"
-            "es_credito,cuenta,qr_imagen) VALUES(?,?,?,?,?,?,?,?)",
-            (clave, etiqueta, activo, orden, req_mon, es_cred, cuenta, qr)
+            "INSERT INTO productos(id, local_id, codigo, nombre, stock,"
+            " umbral_verde, umbral_amarillo,"
+            " precio_costo, precio_unitario,"
+            " precio_costo_orig, precio_unitario_orig,"
+            " moneda_costo, moneda_venta, categoria_id,"
+            " fecha_ultima_mod, activo, es_granel)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (p["id"], almacen_id, codigo, p["nombre"],
+             float(p["stock"] or 0),
+             int(p["umbral_verde"] or 50),
+             int(p["umbral_amarillo"] or 20),
+             0.0, precio_unit, 0.0, precio_unit,
+             "CUP", "CUP", None, fecha_mod,
+             int(p["activo"] or 1), 0)
         )
 
+    n_prods = len(productos_viejos)
 
-def _asegurar_indices_extra(conn) -> None:
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_mov_local_fecha "
-        "ON movimientos(local_id, fecha)"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_mov_tipo_motivo "
-        "ON movimientos(tipo, motivo)"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_mov_proveedor "
-        "ON movimientos(proveedor_id)"
-    )
+    # 5) Copiar movimientos
+    movs_viejos = conn.execute(
+        "SELECT * FROM _movimientos_v4 ORDER BY id ASC"
+    ).fetchall()
 
+    for m in movs_viejos:
+        precio_momento = 0.0
+        if tiene_precio_momento:
+            try:
+                precio_momento = float(m["precio_unitario_mov"] or 0)
+            except (TypeError, ValueError):
+                pass
+
+        conn.execute(
+            "INSERT INTO movimientos(id, local_id, producto_id, tipo,"
+            " cantidad, motivo, grupo_id, detalle, rebaja,"
+            " precio_unitario_momento, precio_costo_momento,"
+            " fecha, usuario, proveedor_id)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (m["id"], almacen_id, m["producto_id"], m["tipo"],
+             float(m["cantidad"] or 0),
+             m["motivo"], m["grupo_id"], m["detalle"],
+             0.0, precio_momento, 0.0,
+             m["fecha"], m["usuario"], None)
+        )
+
+    n_movs = len(movs_viejos)
+
+    # 6) Borrar temporales (hijo primero por FK)
+    conn.execute("DROP TABLE _movimientos_v4")
+    conn.execute("DROP TABLE _productos_v4")
+
+    # 7) Marcar versión
+    _marcar_version(conn)
+
+    print(f"[migración] OK: {n_prods} productos, {n_movs} movimientos "
+          f"migrados al Almacén (id={almacen_id}).")
+    if ultimo_codigo:
+        print(f"[migración] Códigos auto-asignados: FA0001 … {ultimo_codigo}")
+
+
+def _generar_codigo_secuencial(indice: int) -> str:
+    """1 → FA0001, 2 → FA0002, …, 10000 → FB0001, …"""
+    letra = chr(65 + ((indice - 1) // 9999))
+    num = ((indice - 1) % 9999) + 1
+    return f"F{letra}{num:04d}"
+
+
+# ============================================================
+# HELPERS DE VERSIÓN
+# ============================================================
 
 def _leer_version(conn):
     try:
         row = conn.execute(
             "SELECT valor FROM meta WHERE clave='version_esquema'"
         ).fetchone()
-        if row is None:
-            return None
-        return int(row["valor"])
+        return int(row["valor"]) if row else None
     except sqlite3.OperationalError:
         return None
 
 
-def _dropear_todo(conn) -> None:
-    for t in ("pagos_proveedor", "producto_proveedores",
-              "proveedores",
-              "gastos", "categorias_gastos",
-              "devoluciones", "abonos", "pagos", "orden_items",
-              "ordenes_venta", "clientes", "caja_sesiones",
-              "metodos_pago",
-              "movimientos", "productos", "configuracion",
-              "usuarios", "locales", "categorias", "meta"):
-        conn.execute(f"DROP TABLE IF EXISTS {t}")
-
-
-def _migrar_v7_a_v8(conn) -> None:
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS categorias (
-            id      INTEGER PRIMARY KEY AUTOINCREMENT,
-            nombre  TEXT UNIQUE NOT NULL COLLATE NOCASE,
-            activo  INTEGER NOT NULL DEFAULT 1
-        );
-    """)
-    for sql in (
-        "ALTER TABLE productos ADD COLUMN categoria_id INTEGER "
-        "REFERENCES categorias(id)",
-        "ALTER TABLE movimientos ADD COLUMN "
-        "precio_costo_momento REAL NOT NULL DEFAULT 0",
-    ):
-        try:
-            conn.execute(sql)
-        except sqlite3.OperationalError:
-            pass
+def _marcar_version(conn) -> None:
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_prod_categoria "
-        "ON productos(categoria_id)"
-    )
-    _insertar_categorias_default(conn)
+        "INSERT INTO meta(clave,valor) VALUES('version_esquema',?) "
+        "ON CONFLICT(clave) DO UPDATE SET valor=excluded.valor",
+        (str(VERSION_ESQUEMA),))
 
 
-def _migrar_v8_a_v9(conn) -> None:
-    conn.executescript(SCHEMA)
-    _insertar_categorias_default(conn)
-    _asegurar_metodos_pago(conn)
-
-
-def _migrar_v9_a_v10(conn) -> None:
-    """Añade tablas v10 sin tocar datos de v9."""
-    conn.executescript(SCHEMA)
-    _insertar_categorias_gastos_default(conn)
-
+# ============================================================
+# DEFAULTS
+# ============================================================
 
 def _insertar_categorias_default(conn) -> None:
     for nombre in CATEGORIAS_DEFAULT:
@@ -545,9 +602,8 @@ def _asegurar_defaults(conn) -> None:
     for k, v in {
         "umbral_verde_default":    "50",
         "umbral_amarillo_default": "20",
-        "motivo_default_salida":   "Venta",
-        "tema":                    "oscuro",
-        "paleta":                  "dorado",
+        "motivo_default_salida":   "Combos",
+        "tema":                    "claro",
         "tasa_usd":                "1.0",
         "tasa_eur":                "1.0",
         "moneda_visualizacion":    "CUP",
@@ -557,6 +613,17 @@ def _asegurar_defaults(conn) -> None:
         conn.execute(
             "INSERT OR IGNORE INTO configuracion(clave,valor) VALUES(?,?)",
             (k, v))
+
+    # Migración: si quedó "Venta" del P2 original → "Combos"
+    row = conn.execute(
+        "SELECT valor FROM configuracion "
+        "WHERE clave='motivo_default_salida'"
+    ).fetchone()
+    if row and row["valor"] == "Venta":
+        conn.execute(
+            "UPDATE configuracion SET valor='Combos' "
+            "WHERE clave='motivo_default_salida'"
+        )
 
 
 def _asegurar_almacen(conn) -> None:
@@ -569,14 +636,44 @@ def _asegurar_almacen(conn) -> None:
             (datetime.now().strftime("%Y-%m-%d %H:%M:%S"),))
 
 
-def _marcar_version(conn) -> None:
+def _asegurar_columnas_extra(conn) -> None:
+    """Añade columnas que pudieran faltar en BDs migradas."""
+    for tabla, col, defn in (
+        ("productos", "es_granel", "INTEGER NOT NULL DEFAULT 0"),
+        ("movimientos", "proveedor_id", "INTEGER"),
+    ):
+        try:
+            conn.execute(f"ALTER TABLE {tabla} ADD COLUMN {col} {defn}")
+        except sqlite3.OperationalError:
+            pass
+
+
+def _asegurar_indices_extra(conn) -> None:
     conn.execute(
-        "INSERT INTO meta(clave,valor) VALUES('version_esquema',?) "
-        "ON CONFLICT(clave) DO UPDATE SET valor=excluded.valor",
-        (str(VERSION_ESQUEMA),))
+        "CREATE INDEX IF NOT EXISTS idx_mov_local_fecha "
+        "ON movimientos(local_id, fecha)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_mov_tipo_motivo "
+        "ON movimientos(tipo, motivo)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_mov_proveedor "
+        "ON movimientos(proveedor_id)")
 
 
-# ============ Helpers de configuración ============
+def _asegurar_metodos_pago(conn) -> None:
+    for (clave, etiqueta, activo, orden, req_mon, es_cred,
+         cuenta, qr) in METODOS_PAGO_DEFAULT:
+        conn.execute(
+            "INSERT OR IGNORE INTO metodos_pago"
+            "(clave,etiqueta,activo,orden,requiere_moneda,"
+            "es_credito,cuenta,qr_imagen) VALUES(?,?,?,?,?,?,?,?)",
+            (clave, etiqueta, activo, orden, req_mon, es_cred,
+             cuenta, qr))
+
+
+# ============================================================
+# Preferencias
+# ============================================================
 
 def get_pref(clave: str) -> str | None:
     with get_conn() as conn:
@@ -592,4 +689,3 @@ def set_pref(clave: str, valor: str) -> None:
             "INSERT INTO configuracion(clave,valor) VALUES(?,?) "
             "ON CONFLICT(clave) DO UPDATE SET valor=excluded.valor",
             (clave, str(valor)))
-        

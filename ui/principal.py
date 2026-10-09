@@ -760,16 +760,54 @@ def vista_principal(app):
 
     nombre_usuario = app.usuario["username"] if app.usuario else ""
 
-    # FAB: acceso rápido al POS cuando el usuario puede vender
-    fab = None
+    # ── Acciones de la AppBar ──
+    # El POS era un FAB abajo a la derecha y tapaba el último producto.
+    # Ahora va arriba, junto al botón de refrescar.
+    acciones_appbar = []
     if puede_operar:
-        fab = ft.FloatingActionButton(
-            icon=ft.Icons.POINT_OF_SALE,
-            bgcolor=es.COLOR_ACENTO,
-            foreground_color="#ffffff",
-            tooltip="Nueva venta (POS)",
-            on_click=lambda e: app.ir("/pos"),
+        acciones_appbar.append(
+            ft.IconButton(
+                ft.Icons.POINT_OF_SALE,
+                icon_color=es.COLOR_ACENTO,
+                tooltip="Nueva venta (POS)",
+                on_click=lambda e: app.ir("/pos"),
+            )
         )
+    acciones_appbar.append(
+        ft.IconButton(
+            ft.Icons.REFRESH,
+            icon_color=es.COLOR_ACENTO,
+            tooltip="Refrescar",
+            on_click=lambda e: (refrescar(),
+                                snack(page, "Actualizado", "ok")),
+        )
+    )
+
+    return ft.View(
+        route="/principal",
+        controls=[
+            cabecera,
+            ft.Container(content=lista_cont, expand=True),
+        ],
+        appbar=ft.AppBar(
+            title=ft.Row(
+                [logo,
+                 ft.Text(f"Almacen {nombre_usuario}", size=15,
+                         color=es.COLOR_TEXTO)],
+                spacing=8,
+            ),
+            bgcolor=es.COLOR_SUPERFICIE,
+            elevation=0,
+            leading=ft.IconButton(
+                ft.Icons.MENU,
+                on_click=lambda e: app.abrir_drawer(),
+                icon_color=es.COLOR_ACENTO),
+            actions=acciones_appbar,
+        ),
+        # ── Sin floating_action_button ──
+        navigation_bar=barra_navegacion(app, 0),
+        bgcolor=es.COLOR_FONDO,
+    )
 
     return ft.View(
         route="/principal",

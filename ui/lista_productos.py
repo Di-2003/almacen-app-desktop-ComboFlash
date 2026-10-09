@@ -11,6 +11,7 @@ from ui.componentes import (
     campo_busqueda, empty_state, snack, mounted,
 )
 from ui import modales
+from ui._scroll import columna_scroll
 
 
 def vista_lista_productos(app):
@@ -19,8 +20,7 @@ def vista_lista_productos(app):
     titulo = app.lista_titulo or "Productos"
 
     estado = {"filtro_texto": ""}
-    lista_cont = ft.Column(spacing=10, scroll=ft.ScrollMode.AUTO,
-                            expand=True)
+    lista_cont = columna_scroll("/lista-productos", app, [], spacing=10)
 
     def cargar_productos():
         if filtro_tipo == "inactivos":

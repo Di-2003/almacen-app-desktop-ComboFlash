@@ -1,13 +1,5 @@
 """
 Login y primer arranque.
-
-Soporta imágenes opcionales:
-  - recursos/icon.png      → logo
-  - recursos/login_bg.png  → fondo del login
-  - recursos/signin_bg.png → fondo del primer arranque
-
-El título del login se actualiza al nombre del usuario que se está
-escribiendo: 'Almacen' → 'Almacen Diego'.
 """
 from datetime import datetime
 import flet as ft
@@ -71,16 +63,11 @@ def _estilo_textfield():
     return {
         **es.estilo_textfield(radio=12),
         "height": 56,
-        "label_style": ft.TextStyle(color=es.COLOR_TEXTO_SUAVE),
     }
 
 
 def _caja_login(titulo, subtitulo: str, campos: list,
                 boton_texto: str, boton_icono, on_click) -> ft.Container:
-    """
-    titulo puede ser str o un ft.Text ya creado (para actualizarlo
-    dinámicamente desde fuera).
-    """
     if isinstance(titulo, ft.Text):
         titulo_widget = titulo
     else:
@@ -108,7 +95,7 @@ def _caja_login(titulo, subtitulo: str, campos: list,
                     width=10000, height=52,
                     style=ft.ButtonStyle(
                         bgcolor=es.COLOR_ACENTO,
-                        color=es.COLOR_MARCA_NEGRO,
+                        color="#ffffff",
                         shape=ft.RoundedRectangleBorder(
                             radius=ft.BorderRadius.all(12)),
                     ),
@@ -131,7 +118,6 @@ def _caja_login(titulo, subtitulo: str, campos: list,
 
 
 def vista_primer_arranque(app):
-    """Primer arranque: crear el admin. Título fijo 'Almacen'."""
     page = app.page
     est = _estilo_textfield()
 
@@ -193,11 +179,9 @@ def vista_primer_arranque(app):
 
 
 def vista_login(app):
-    """Login normal. El título se vuelve 'Almacen <usuario>' al escribir."""
     page = app.page
     est = _estilo_textfield()
 
-    # Título dinámico (lo actualizamos al vuelo)
     titulo_login = ft.Text(
         "Almacen",
         size=26, weight=ft.FontWeight.BOLD,

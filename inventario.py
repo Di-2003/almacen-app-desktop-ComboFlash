@@ -212,7 +212,7 @@ def set_config(clave: str, valor: str) -> None:
 
 
 def motivo_default_salida() -> str:
-    return get_config("motivo_default_salida") or "Venta"
+    return get_config("motivo_default_salida") or "Combos"
 
 
 def motivos_usados_recientes(limite: int = 15) -> list[str]:
@@ -1378,3 +1378,95 @@ def eliminar_movimiento(mov_id, usuario):
                 "UPDATE productos SET fecha_ultima_mod=? WHERE id=?",
                 (row["ultima"], mov["producto_id"]),
             )
+            
+
+# ================= EDITAR MOVIMIENTO =================
+
+@_write
+def editar_movimiento(mov_id, producto_id, tipo, cantidad, motivo,
+                      fecha, usuario):
+    """
+    Edita un movimiento existente.
+
+    - Revierte el efecto del movimiento original sobre el stock.
+    - Aplica el efecto del nuevo movimiento.
+    - Actualiza el registro en la BD.
+
+    Solo permite editar ENTRADA y SALIDA (los tipos con efecto claro
+    sobre stock). BAJA y TRASPASO_* se rechazan: para esos casos hay
+    que eliminar el movimiento y crear uno nuevo.
+    """
+    username = _autorizar(usuario, _ROLES_OPERATIVOS)
+
+    tipo = (tipo or "").strip().upper()
+    TIPOS_EDITABLES = ("ENTRADA", "SALIDA")
+    if tipo not in TIPOS_EDITABLES:
+        raise ValueError(
+            f"Este tipo de movimiento no se puede editar: {tipo}. "
+            f"Para traspasos o bajas, elimínalo y crea uno nuevo.")
+
+    try:
+        cantidad = float(cantidad)
+    except (TypeError, ValueError):
+        raise ValueError("La cantidad debe ser un número")
+    if cantidad <= 0:
+        raise ValueError("La cantidad debe ser mayor que 0")
+
+    fecha = (fecha or "").strip() or _ahora()
+    motivo = (motivo or "").strip() or None
+
+    with get_conn() as conn:
+        mov = conn.execute(
+            "SELECT * FROM movimientos WHERE id=?", (mov_id,)
+        ).fetchone()
+        if mov is None:
+            raise ValueError("Movimiento no encontrado")
+
+        if mov["tipo"] not in TIPOS_EDITABLES:
+            raise ValueError(
+                f"Solo se pueden editar ENTRADA y SALIDA. "
+                f"Este movimiento es {mov['tipo']}.")
+
+        nuevo_prod = conn.execute(
+            "SELECT * FROM productos WHERE id=?", (int(producto_id),)
+        ).fetchone()
+        if nuevo_prod is None:
+            raise ValueError("Producto no encontrado")
+
+        # ── Calcular stock EFECTIVO después de revertir el original ──
+        # (necesario para validar correctamente cuando el producto
+        #  destino es el MISMO que el original)
+        stock_efectivo = float(nuevo_prod["stock"] or 0)
+        if mov["producto_id"] == nuevo_prod["id"]:
+            if mov["tipo"] == "ENTRADA":
+                stock_efectivo -= float(mov["cantidad"] or 0)
+            elif mov["tipo"] == "SALIDA":
+                stock_efectivo += float(mov["cantidad"] or 0)
+
+        if tipo == "SALIDA" and cantidad > stock_efectivo:
+            raise StockInsuficiente(stock_efectivo, cantidad)
+
+        # ── Revertir efecto del original ──
+        _revertir_efecto_stock(
+            conn, mov["producto_id"], mov["tipo"],
+            float(mov["cantidad"] or 0))
+
+        # ── Aplicar efecto del nuevo ──
+        if tipo == "ENTRADA":
+            conn.execute(
+                "UPDATE productos SET stock=stock+?, fecha_ultima_mod=? "
+                "WHERE id=?",
+                (cantidad, fecha, nuevo_prod["id"]))
+        elif tipo == "SALIDA":
+            conn.execute(
+                "UPDATE productos SET stock=stock-?, fecha_ultima_mod=? "
+                "WHERE id=?",
+                (cantidad, fecha, nuevo_prod["id"]))
+
+        # ── Actualizar registro ──
+        conn.execute(
+            "UPDATE movimientos SET local_id=?, producto_id=?, tipo=?, "
+            "cantidad=?, motivo=?, fecha=?, usuario=? WHERE id=?",
+            (nuevo_prod["local_id"], nuevo_prod["id"], tipo, cantidad,
+             motivo, fecha, username, mov_id))
+        

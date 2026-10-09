@@ -9,7 +9,7 @@ from ui import estilos as es
 from ui.componentes import (
     empty_state, snack, bottom_sheet, mounted, toast,
 )
-
+from ui._scroll import columna_scroll
 
 def _rango_mes_actual():
     hoy = datetime.now()
@@ -32,7 +32,7 @@ def vista_gastos(app):
     }
     total_lbl = ft.Text("", size=18, weight=ft.FontWeight.BOLD,
                         color=es.COLOR_ACENTO)
-    lista = ft.Column(spacing=8, scroll=ft.ScrollMode.AUTO, expand=True)
+    lista = columna_scroll("/gastos", app, [], spacing=8)
 
     def _rango(periodo):
         hoy = datetime.now()

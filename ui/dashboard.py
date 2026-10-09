@@ -11,6 +11,8 @@ from ui import estilos as es
 from ui.componentes import tarjeta_metrica, empty_state
 from ui.principal import barra_navegacion, _chip_local
 import gastos as gs
+from ui._scroll import columna_scroll
+
 
 def _seccion(titulo):
     return ft.Row([
@@ -81,13 +83,13 @@ def vista_dashboard(app):
 
         return ft.Container(
             content=ft.Text(texto, size=12,
-                            color=(es.COLOR_MARCA_NEGRO if activo
-                                   else es.COLOR_TEXTO_SUAVE),
-                            weight=ft.FontWeight.BOLD),
+            color=(es.COLOR_MARCA_NEGRO if activo
+            else es.COLOR_TEXTO_SUAVE),
+            weight=ft.FontWeight.BOLD),
             bgcolor=(es.COLOR_ACENTO if activo else es.COLOR_SUPERFICIE),
             border=ft.Border.all(1,
-                                 es.COLOR_ACENTO if activo
-                                 else es.COLOR_BORDE),
+            es.COLOR_ACENTO if activo
+            else es.COLOR_BORDE),
             padding=ft.Padding.symmetric(horizontal=14, vertical=8),
             border_radius=20,
             on_click=_click,
@@ -247,7 +249,7 @@ def vista_dashboard(app):
             "Crea tipos desde el menú lateral.")
 
     contenido = ft.Container(
-        content=ft.Column(controls=[
+        content=columna_scroll("/dashboard", app, [
             _seccion("Período"),
             chips,
             ft.Container(height=12),
@@ -263,7 +265,7 @@ def vista_dashboard(app):
             _seccion("Por tipo de producto"),
             _card(contenido_cat),
             ft.Container(height=30),
-        ], spacing=10, scroll=ft.ScrollMode.AUTO, expand=True),
+        ], spacing=10),
         padding=ft.Padding.all(14),
         expand=True,
     )

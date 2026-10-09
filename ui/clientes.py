@@ -7,12 +7,13 @@ from ui import estilos as es
 from ui.componentes import (
     campo_busqueda, empty_state, snack, bottom_sheet, mounted,
 )
+from ui._scroll import columna_scroll
 
 
 def vista_clientes(app):
     page = app.page
     estado = {"filtro": "", "ver_deuda": False}
-    lista = ft.Column(spacing=10, scroll=ft.ScrollMode.AUTO, expand=True)
+    lista = columna_scroll("/clientes", app, [], spacing=10)
 
     def refrescar():
         lista.controls.clear()
@@ -299,7 +300,6 @@ def _dlg_editar(app, cliente, on_refresh):
                          multiline=True, min_lines=2, max_lines=4,
                          **es.estilo_textfield(12))
     error_lbl = ft.Text("", color=es.COLOR_PELIGRO, size=12)
-    dlg_ref = {"dlg": None}
 
     def guardar(e):
         error_lbl.value = ""

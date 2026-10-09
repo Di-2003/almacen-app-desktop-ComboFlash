@@ -10,7 +10,7 @@ from ui.componentes import (
     campo_busqueda, empty_state, snack, bottom_sheet, mounted,
 )
 from ui.principal import barra_navegacion
-
+from ui._scroll import columna_scroll
 
 PASO_PAGINACION = 30
 
@@ -35,7 +35,7 @@ _TIPOS_COLOR = {
 def vista_movimientos(app):
     page = app.page
     estado = {"filtro": "", "tipo": None, "limite": PASO_PAGINACION}
-    lista = ft.Column(spacing=8, expand=True, scroll=ft.ScrollMode.AUTO)
+    lista = columna_scroll("/movimientos", app, [], spacing=8)
     info = ft.Text("", size=11, color=es.COLOR_TEXTO_SUAVE)
     filtros_row = ft.Row(spacing=8, scroll=ft.ScrollMode.AUTO)
 
@@ -352,14 +352,21 @@ def _dlg_edit_mov(app, mv, on_refresh):
         options=opts, editable=True,
         **es.borde_textfield(12),
     )
+
+    # ── Solo ENTRADA y SALIDA: son los únicos tipos editables ──
+    # BAJA, TRASPASO_*, AJUSTE y UMBRAL necesitan operaciones
+    # adicionales (grupo, destino, restauración de stock, etc.)
+    # y se rechazan en `inventario.editar_movimiento`.
+    tipos_editables = ["ENTRADA", "SALIDA"]
+    tipo_actual = mv["tipo"] if mv["tipo"] in tipos_editables else None
     dd_t = ft.Dropdown(
-        label="Tipo", value=mv["tipo"],
-        options=[ft.DropdownOption(key=t, text=t) for t in
-                 ["ENTRADA", "SALIDA", "BAJA",
-                  "TRASPASO_SALIDA", "TRASPASO_ENTRADA",
-                  "AJUSTE", "UMBRAL"]],
+        label="Tipo",
+        value=tipo_actual,
+        options=[ft.DropdownOption(key=t, text=t)
+                 for t in tipos_editables],
         **es.borde_textfield(12),
     )
+
     tf_c = ft.TextField(
         label="Cantidad", value=inv.fmt_cantidad(mv["cantidad"]),
         keyboard_type=ft.KeyboardType.NUMBER,
@@ -376,8 +383,25 @@ def _dlg_edit_mov(app, mv, on_refresh):
     )
     error_lbl = ft.Text("", color=es.COLOR_PELIGRO, size=12)
 
+    # Si el movimiento original NO es editable, avisar arriba y no
+    # dejar guardar (aunque el usuario cambie el tipo, el registro
+    # original es inmutable desde aquí).
+    if tipo_actual is None:
+        error_lbl.value = (
+            f"Este movimiento es {mv['tipo']} y no se puede editar "
+            f"desde aquí. Elimínalo y crea uno nuevo si lo necesitas."
+        )
+
     def guardar(e):
         error_lbl.value = ""
+        if not dd_p.value:
+            error_lbl.value = "Selecciona un producto"
+            page.update()
+            return
+        if not dd_t.value:
+            error_lbl.value = "Selecciona un tipo"
+            page.update()
+            return
         try:
             inv.editar_movimiento(
                 mov_id=mv["id"],
