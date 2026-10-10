@@ -1,2 +1,3 @@
 flet==1.0.3
-openpyxl
+openpyx
+lxml>=5.0.0

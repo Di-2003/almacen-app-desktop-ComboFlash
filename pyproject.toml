@@ -1,31 +1,25 @@
 [project]
-name = "almacen-movil-raidel"
-version = "1.1.0"
+name = "Almacen"
+version = "1.0.0"
 description = "Almacen — multi-local con POS (Flet 1.0+)"
 dependencies = [
     "flet==1.0.3",
     "openpyxl",
+    "lxml>=5.0.0",
     "fpdf2>=2.7.8",
     "Pillow>=10.0.0",
 ]
-
 [tool.flet]
 product_name = "Almacen"
-package_name = "com.combosflash.almacen_raidel"
+package_name = "com.combosflash.almacen"
 icon = "assets/icon.png"
 assets = ["assets"]
 
 [tool.flet.icons]
-android = "assets/icon.png"
-windows = "assets/icon.ico"    # ← .ico multi-resolución
+windows = "assets/icon.ico"
 linux   = "assets/icon.png"
 macos   = "assets/icon.png"
 web     = "assets/icon.png"
 
 [tool.flet.flutter.pubspec.dependency_overrides]
 jni = "1.1.0"
-
-[tool.flet.android.permission]
-"android.permission.READ_EXTERNAL_STORAGE" = true
-"android.permission.WRITE_EXTERNAL_STORAGE" = true
-"android.permission.MANAGE_EXTERNAL_STORAGE" = true

@@ -604,3 +604,75 @@ def _mostrar_texto_para_copiar(page, texto):
         ))
     except Exception:
         pass
+
+
+def panel_sugerencias(on_pick, alto_max=200):
+    """
+    Devuelve (panel, ocultar, rebuild) para usar debajo de un TextField.
+      - panel: ft.Column que se muestra/oculta.
+      - ocultar(): limpia y oculta el panel.
+      - rebuild(items): llena con items (dicts con nombre, codigo, _uso).
+    """
+    panel = ft.Column(spacing=0, tight=True)
+    panel.visible = False
+
+    def ocultar():
+        panel.controls.clear()
+        panel.visible = False
+        try:
+            panel.update()
+        except Exception:
+            pass
+
+    def rebuild(items):
+        panel.controls.clear()
+        if not items:
+            panel.visible = False
+            try:
+                panel.update()
+            except Exception:
+                pass
+            return
+        for it in items:
+            panel.controls.append(_fila_sugerencia(it, on_pick, ocultar))
+        panel.visible = True
+        try:
+            panel.update()
+        except Exception:
+            pass
+
+    return panel, ocultar, rebuild
+
+
+def _fila_sugerencia(item, on_pick, ocultar):
+    def click(e):
+        on_pick(item)
+        ocultar()
+
+    nombre = item.get("nombre") or ""
+    codigo = item.get("codigo") or ""
+    uso = item.get("_uso")
+    sub = codigo
+    if uso is not None:
+        sub = f"{codigo}  ·  {uso} mov." if codigo else f"{uso} mov."
+    return ft.Container(
+        content=ft.Row([
+            ft.Icon(ft.Icons.SEARCH, size=16,
+                    color=es.COLOR_ACENTO),
+            ft.Column([
+                ft.Text(nombre, size=13,
+                        color=es.COLOR_TEXTO,
+                        weight=ft.FontWeight.W_600,
+                        max_lines=1,
+                        overflow=ft.TextOverflow.ELLIPSIS),
+                ft.Text(sub, size=10,
+                        color=es.COLOR_TEXTO_SUAVE,
+                        max_lines=1,
+                        overflow=ft.TextOverflow.ELLIPSIS),
+            ], spacing=1, expand=True),
+        ], spacing=8,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        padding=ft.Padding.symmetric(horizontal=10, vertical=8),
+        on_click=click,
+        ink=True,
+    )

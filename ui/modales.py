@@ -1,7 +1,6 @@
 """
 Diálogos. Incluye moneda original, promedio ponderado, categoría,
-flag de granel.
-Autocompletado cruzado nombre↔código en entrada, salida y traspaso.
+flag de granel, autocompletado con sugerencias y Enter para guardar.
 Creación de categoría INLINE (sin diálogo anidado).
 """
 from datetime import datetime
@@ -9,13 +8,14 @@ import flet as ft
 import inventario as inv
 import locales as loc
 import categorias as cats
+import proveedores as pv
 from db import get_conn, GENERAL_ID
 from ui import estilos as es
 from ui.componentes import (
     chip_estado, chip_inactivo, snack, caja_info, bottom_sheet,
-    cursor_al_final, cerrar_dialogo,
+    cursor_al_final, cerrar_dialogo, panel_sugerencias,
 )
-import proveedores as pv
+
 
 def _mensaje_movimiento(info, accion, delta):
     c_antes = info["color_antes"]
@@ -155,12 +155,6 @@ def abrir_detalle_producto(app, prod, on_refresh=None):
         def sal(e):
             cerrar_dialogo(page)
             modal_salida(app, producto=prod, on_refresh=on_refresh)
-        def prov(e):
-            cerrar_dialogo(page)
-            from ui.producto_proveedores import (
-                abrir_proveedores_producto,
-            )
-            abrir_proveedores_producto(app, prod, on_refresh=on_refresh)
         def trasp(e):
             cerrar_dialogo(page)
             modal_traspaso(app, producto=prod, on_refresh=on_refresh)
@@ -185,6 +179,12 @@ def abrir_detalle_producto(app, prod, on_refresh=None):
         def baja(e):
             cerrar_dialogo(page)
             _conf_baja(app, prod, on_refresh)
+        def prov(e):
+            cerrar_dialogo(page)
+            from ui.producto_proveedores import (
+                abrir_proveedores_producto,
+            )
+            abrir_proveedores_producto(app, prod, on_refresh=on_refresh)
         def toggle_granel(e):
             try:
                 with get_conn() as conn:
@@ -474,11 +474,6 @@ def modal_entrada(app, producto=None, on_refresh=None):
 
     dd_cat, bloque_cat = _construir_selector_categoria(cat_default, None)
 
-    sw_granel = ft.Switch(
-        label="Se vende a granel (kg, litros)",
-        value=bool(producto.get("es_granel") if producto else 0),
-        active_color=es.COLOR_ACENTO,
-    )
     # ── Dropdown de proveedor ──
     prov_default = ""
     if producto:
@@ -503,6 +498,13 @@ def modal_entrada(app, producto=None, on_refresh=None):
         icon=ft.Icons.ADD,
         on_click=_crear_prov_inline,
         style=ft.ButtonStyle(color=es.COLOR_ACENTO))
+
+    sw_granel = ft.Switch(
+        label="Se vende a granel (kg, litros)",
+        value=bool(producto.get("es_granel") if producto else 0),
+        active_color=es.COLOR_ACENTO,
+    )
+
     tf_fecha = ft.TextField(
         label="Fecha y hora (YYYY-MM-DD)",
         value=_ahora_str(),
@@ -543,6 +545,45 @@ def modal_entrada(app, producto=None, on_refresh=None):
         except Exception:
             pass
 
+    # ── Panel de sugerencias para el nombre ──
+    def _pick_sugerencia(prod):
+        tf_p.value = prod["nombre"]
+        if prod.get("codigo"):
+            tf_cod.value = prod["codigo"]
+        upd()
+        try:
+            page.update()
+        except Exception:
+            pass
+
+    panel_sug, ocultar_sug, rebuild_sug = panel_sugerencias(
+        on_pick=_pick_sugerencia)
+
+    def on_change_nombre(e):
+        nom = (tf_p.value or "").strip()
+        if not nom:
+            ocultar_sug()
+        else:
+            p = inv.buscar_producto_por_nombre(nom, app.local_id)
+            if p is not None:
+                if p.get("codigo"):
+                    tf_cod.value = p["codigo"]
+                ocultar_sug()
+            else:
+                pg = inv.buscar_producto_global_por_nombre(nom)
+                if pg and pg.get("codigo"):
+                    tf_cod.value = pg["codigo"]
+                    ocultar_sug()
+                else:
+                    sugs = inv.buscar_productos_like(
+                        nom, app.local_id, limite=8)
+                    rebuild_sug(sugs)
+        upd()
+        try:
+            page.update()
+        except Exception:
+            pass
+
     def autocompletar_desde_codigo(e):
         cod = (tf_cod.value or "").strip()
         if not cod:
@@ -554,31 +595,14 @@ def modal_entrada(app, producto=None, on_refresh=None):
             pg = inv.buscar_producto_global_por_codigo(cod)
             if pg is not None:
                 tf_p.value = pg["nombre"]
+        ocultar_sug()
         upd()
         try:
             page.update()
         except Exception:
             pass
 
-    def autocompletar_desde_nombre(e):
-        nom = (tf_p.value or "").strip()
-        if not nom:
-            return
-        p = inv.buscar_producto_por_nombre(nom, app.local_id)
-        if p is not None:
-            if p.get("codigo"):
-                tf_cod.value = p["codigo"]
-        else:
-            pg = inv.buscar_producto_global_por_nombre(nom)
-            if pg and pg.get("codigo"):
-                tf_cod.value = pg["codigo"]
-        upd()
-        try:
-            page.update()
-        except Exception:
-            pass
-
-    tf_p.on_change = autocompletar_desde_nombre
+    tf_p.on_change = on_change_nombre
     tf_cod.on_change = autocompletar_desde_codigo
     tf_p.on_focus = cursor_al_final
     tf_cod.on_focus = cursor_al_final
@@ -627,6 +651,17 @@ def modal_entrada(app, producto=None, on_refresh=None):
             page.update()
             return
 
+        # Guardar flag es_granel (propagado a todos los locales)
+        try:
+            with get_conn() as conn:
+                conn.execute(
+                    "UPDATE productos SET es_granel=? "
+                    "WHERE nombre=? COLLATE NOCASE",
+                    (1 if sw_granel.value else 0, n))
+            inv.invalidar_cache()
+        except Exception:
+            pass
+
         # Asociar proveedor si se seleccionó
         prov_id = None
         if dd_prov.value:
@@ -635,12 +670,10 @@ def modal_entrada(app, producto=None, on_refresh=None):
             except ValueError:
                 prov_id = None
         if prov_id:
-            # Auto-asociar el proveedor al producto (idempotente)
             try:
                 pv.asociar_proveedor(n, prov_id)
             except Exception:
                 pass
-            # Actualizar el último movimiento de ENTRADA para vincularlo
             try:
                 with get_conn() as conn:
                     conn.execute(
@@ -653,17 +686,6 @@ def modal_entrada(app, producto=None, on_refresh=None):
                 inv.invalidar_cache()
             except Exception:
                 pass
-        
-        # Guardar flag es_granel (propagado a todos los locales)
-        try:
-            with get_conn() as conn:
-                conn.execute(
-                    "UPDATE productos SET es_granel=? "
-                    "WHERE nombre=? COLLATE NOCASE",
-                    (1 if sw_granel.value else 0, n))
-            inv.invalidar_cache()
-        except Exception:
-            pass
 
         texto, tipo = _mensaje_movimiento(
             info, "Entrada", f"+{inv.fmt_cantidad(c)}")
@@ -675,10 +697,26 @@ def modal_entrada(app, producto=None, on_refresh=None):
 
         cerrar_dialogo(page, dlg_ref["dlg"], on_close=_despues)
 
+    # Bloque con el input + panel de sugerencias
+    bloque_p = ft.Column([
+        tf_p,
+        ft.Container(
+            content=panel_sug,
+            bgcolor=es.COLOR_SUPERFICIE_2,
+            border=ft.Border.all(1, es.COLOR_BORDE),
+            border_radius=8,
+            padding=ft.Padding.symmetric(vertical=4),
+        ),
+    ], spacing=4, tight=True)
+
+    # Enter para guardar en cualquier campo de texto
+    for _f in (tf_p, tf_cod, tf_c, tf_pc, tf_pu, tf_fecha):
+        _f.on_submit = guardar
+
     dlg = ft.AlertDialog(
         title=ft.Text("Registrar entrada"),
         content=ft.Column([
-            tf_p, tf_cod, tf_c, tf_pc, tf_pu, dd_moneda, bloque_cat,
+            bloque_p, tf_cod, tf_c, tf_pc, tf_pu, dd_moneda, bloque_cat,
             dd_prov, btn_nuevo_prov,
             sw_granel,
             ft.Container(height=10), tf_fecha, lbl, error_lbl,
@@ -773,6 +811,40 @@ def modal_salida(app, producto=None, on_refresh=None):
         except Exception:
             pass
 
+    # ── Panel de sugerencias para el nombre ──
+    def _pick_sugerencia(prod):
+        tf_p.value = prod["nombre"]
+        if prod.get("codigo"):
+            tf_cod.value = prod["codigo"]
+        upd()
+        try:
+            page.update()
+        except Exception:
+            pass
+
+    panel_sug, ocultar_sug, rebuild_sug = panel_sugerencias(
+        on_pick=_pick_sugerencia)
+
+    def on_change_nombre(e):
+        nom = (tf_p.value or "").strip()
+        if not nom:
+            ocultar_sug()
+        else:
+            p = inv.buscar_producto_por_nombre(nom, app.local_id)
+            if p is not None:
+                if p.get("codigo"):
+                    tf_cod.value = p["codigo"]
+                ocultar_sug()
+            else:
+                sugs = inv.buscar_productos_like(
+                    nom, app.local_id, limite=8)
+                rebuild_sug(sugs)
+        upd()
+        try:
+            page.update()
+        except Exception:
+            pass
+
     def autocompletar_desde_codigo(e):
         cod = (tf_cod.value or "").strip()
         if not cod:
@@ -780,26 +852,14 @@ def modal_salida(app, producto=None, on_refresh=None):
         p = inv.buscar_producto_por_codigo(cod, app.local_id)
         if p is not None:
             tf_p.value = p["nombre"]
+        ocultar_sug()
         upd()
         try:
             page.update()
         except Exception:
             pass
 
-    def autocompletar_desde_nombre(e):
-        nom = (tf_p.value or "").strip()
-        if not nom:
-            return
-        p = inv.buscar_producto_por_nombre(nom, app.local_id)
-        if p is not None and p.get("codigo"):
-            tf_cod.value = p["codigo"]
-        upd()
-        try:
-            page.update()
-        except Exception:
-            pass
-
-    tf_p.on_change = autocompletar_desde_nombre
+    tf_p.on_change = on_change_nombre
     tf_cod.on_change = autocompletar_desde_codigo
     tf_c.on_change = upd
     tf_rebaja.on_change = upd
@@ -848,10 +908,26 @@ def modal_salida(app, producto=None, on_refresh=None):
 
         cerrar_dialogo(page, dlg_ref["dlg"], on_close=_despues)
 
+    # Bloque con el input + panel de sugerencias
+    bloque_p = ft.Column([
+        tf_p,
+        ft.Container(
+            content=panel_sug,
+            bgcolor=es.COLOR_SUPERFICIE_2,
+            border=ft.Border.all(1, es.COLOR_BORDE),
+            border_radius=8,
+            padding=ft.Padding.symmetric(vertical=4),
+        ),
+    ], spacing=4, tight=True)
+
+    # Enter para guardar en cualquier campo de texto
+    for _f in (tf_p, tf_cod, tf_c, tf_motivo, tf_rebaja, tf_fecha):
+        _f.on_submit = guardar
+
     dlg = ft.AlertDialog(
         title=ft.Text("Registrar salida"),
         content=ft.Column([
-            tf_p, tf_cod, tf_c, tf_motivo, tf_rebaja,
+            bloque_p, tf_cod, tf_c, tf_motivo, tf_rebaja,
             ft.Container(height=10), tf_fecha, lbl, error_lbl,
         ], tight=True, spacing=10, width=340,
             scroll=ft.ScrollMode.AUTO),
@@ -1009,6 +1085,10 @@ def modal_traspaso(app, producto=None, on_refresh=None):
 
         cerrar_dialogo(page, dlg_ref["dlg"], on_close=_despues)
 
+    # Enter para guardar
+    for _f in (tf_p, tf_cod, tf_c):
+        _f.on_submit = guardar
+
     dlg = ft.AlertDialog(
         title=ft.Text("Traspaso"),
         content=ft.Column([
@@ -1102,6 +1182,8 @@ def _dlg_precio(app, prod, cual, on_refresh=None):
                 on_refresh()
 
         cerrar_dialogo(page, dlg_ref["dlg"], on_close=_despues)
+
+    tf.on_submit = guardar
 
     dlg = ft.AlertDialog(
         title=ft.Text(f"{titulo}: {prod['nombre']}"),
@@ -1204,6 +1286,8 @@ def _dlg_codigo(app, prod, on_refresh=None):
 
         cerrar_dialogo(page, dlg_ref["dlg"], on_close=_despues)
 
+    tf.on_submit = guardar
+
     dlg = ft.AlertDialog(
         title=ft.Text(f"Código: {prod['nombre']}"),
         content=ft.Column([
@@ -1252,6 +1336,8 @@ def _dlg_renombrar(app, prod, on_refresh=None):
 
         cerrar_dialogo(page, dlg_ref["dlg"], on_close=_despues)
 
+    tf.on_submit = guardar
+
     dlg = ft.AlertDialog(
         title=ft.Text(f"Renombrar: {prod['nombre']}"),
         content=ft.Column([tf, error_lbl], tight=True, width=320),
@@ -1298,6 +1384,9 @@ def _dlg_umbrales(app, prod, on_refresh=None):
 
         cerrar_dialogo(page, dlg_ref["dlg"], on_close=_despues)
 
+    tf_v.on_submit = guardar
+    tf_a.on_submit = guardar
+
     dlg = ft.AlertDialog(
         title=ft.Text(f"Umbrales: {prod['nombre']}"),
         content=ft.Column([tf_v, tf_a, error_lbl],
@@ -1341,6 +1430,8 @@ def _conf_baja(app, prod, on_refresh=None):
 
         cerrar_dialogo(page, dlg_ref["dlg"], on_close=_despues)
 
+    tf_m.on_submit = hacer
+
     dlg = ft.AlertDialog(
         title=ft.Text("Dar de baja"),
         content=ft.Column([
@@ -1359,8 +1450,10 @@ def _conf_baja(app, prod, on_refresh=None):
     )
     dlg_ref["dlg"] = dlg
     page.show_dialog(dlg)
-    
-    
+
+
+# ============ crear proveedor inline ============
+
 def _dlg_nuevo_prov_inline(app, dd_prov, producto):
     """Crea un proveedor nuevo y lo añade al dropdown + lo asocia
     al producto si aplica."""
@@ -1395,16 +1488,18 @@ def _dlg_nuevo_prov_inline(app, dd_prov, producto):
         except Exception:
             pass
 
+    tf_n.on_submit = guardar
+    tf_t.on_submit = guardar
+
     page.show_dialog(ft.AlertDialog(
         title=ft.Text("Nuevo proveedor"),
         content=ft.Column([tf_n, tf_t, err],
-                          tight=True, width=320, spacing=10),
+                        tight=True, width=320, spacing=10),
         actions=[
             ft.TextButton("Cancelar",
-                          on_click=lambda e: page.pop_dialog()),
+                        on_click=lambda e: page.pop_dialog()),
             ft.FilledButton("Crear", on_click=guardar,
                             style=es.estilo_boton_marca()),
         ],
         actions_alignment=ft.MainAxisAlignment.END,
     ))
-    

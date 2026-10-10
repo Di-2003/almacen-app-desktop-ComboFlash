@@ -16,28 +16,35 @@ PASO_PAGINACION = 30
 
 _TIPOS_COLOR = {
     "ENTRADA":      (es.COLOR_EXITO, es.COLOR_EXITO_SUAVE,
-                     ft.Icons.ADD_CIRCLE),
+                    ft.Icons.ADD_CIRCLE),
     "SALIDA":       (es.COLOR_PELIGRO, es.COLOR_PELIGRO_SUAVE,
-                     ft.Icons.REMOVE_CIRCLE),
+                    ft.Icons.REMOVE_CIRCLE),
     "BAJA":         (es.COLOR_TEXTO_SUAVE, es.COLOR_BORDE,
-                     ft.Icons.DELETE_OUTLINE),
+                    ft.Icons.DELETE_OUTLINE),
     "UMBRAL":       (es.COLOR_INFO, es.COLOR_INFO_SUAVE,
-                     ft.Icons.TUNE),
+                    ft.Icons.TUNE),
     "AJUSTE":       (es.COLOR_AMBAR, es.COLOR_AMBAR_SUAVE,
-                     ft.Icons.ATTACH_MONEY),
+                    ft.Icons.ATTACH_MONEY),
     "TRASPASO_SALIDA":  (es.COLOR_INFO, es.COLOR_INFO_SUAVE,
-                         ft.Icons.LOGOUT),
+                        ft.Icons.LOGOUT),
     "TRASPASO_ENTRADA": (es.COLOR_INFO, es.COLOR_INFO_SUAVE,
-                         ft.Icons.LOGIN),
+                        ft.Icons.LOGIN),
 }
 
 
 def vista_movimientos(app):
     page = app.page
-    estado = {"filtro": "", "tipo": None, "limite": PASO_PAGINACION}
-    lista = columna_scroll("/movimientos", app, [], spacing=8)
+    PASO = 30
+    estado = {
+        "filtro": "",
+        "tipo": None,
+        "offset": 0,
+        "total": 0,
+    }
+    lista = ft.Column(spacing=8, expand=True, scroll=ft.ScrollMode.AUTO)
     info = ft.Text("", size=11, color=es.COLOR_TEXTO_SUAVE)
     filtros_row = ft.Row(spacing=8, scroll=ft.ScrollMode.AUTO)
+    boton_mas = ft.Container()
 
     def _chip_filtro(texto, activo, on_click):
         return ft.Container(
@@ -74,123 +81,132 @@ def vista_movimientos(app):
 
     def set_filtro(t):
         estado["tipo"] = t
-        estado["limite"] = PASO_PAGINACION
+        estado["offset"] = 0
         _rebuild_filtros()
-        refrescar()
+        recargar()
 
-    def refrescar():
-        lista.controls.clear()
-        movs = inv.listar_movimientos(
-            local_id=app.local_id, limite=estado["limite"])
-        f = estado["filtro"]
-        t = estado["tipo"]
-
-        if t:
-            if t == "TRASPASO":
-                movs = [m for m in movs
-                        if m["tipo"] in ("TRASPASO_SALIDA",
-                                         "TRASPASO_ENTRADA")]
-            else:
-                movs = [m for m in movs if m["tipo"] == t]
-        if f:
-            movs = [m for m in movs
-                    if f in (m["producto"] or "").lower()
-                    or f in (m["motivo"] or "").lower()
-                    or f in (m.get("codigo") or "").lower()]
-
+    def _construir_fila(m):
+        tipo = m["tipo"]
+        c, bg, ic = _TIPOS_COLOR.get(
+            tipo, (es.COLOR_TEXTO_SUAVE, es.COLOR_BORDE,
+                   ft.Icons.CIRCLE))
+        cant = (inv.fmt_cantidad(m["cantidad"])
+                if m["cantidad"] else "—")
         puede_editar = app.usuario["rol"] in ("admin", "almacen")
-
-        for m in movs:
-            tipo = m["tipo"]
-            c, bg, ic = _TIPOS_COLOR.get(
-                tipo, (es.COLOR_TEXTO_SUAVE, es.COLOR_BORDE,
-                       ft.Icons.CIRCLE))
-            cant = (inv.fmt_cantidad(m["cantidad"])
-                    if m["cantidad"] else "—")
-
-            lista.controls.append(ft.Container(
-                content=ft.Column([
-                    ft.Row([
-                        ft.Container(
-                            content=ft.Icon(ic, color="white", size=16),
-                            bgcolor=c, padding=8, border_radius=10,
-                        ),
-                        ft.Column([
-                            ft.Text(m["producto"], size=14,
-                                    weight=ft.FontWeight.W_600,
-                                    max_lines=1,
-                                    overflow=ft.TextOverflow.ELLIPSIS,
-                                    color=es.COLOR_TEXTO),
-                            ft.Text(tipo, size=10, color=c,
-                                    weight=ft.FontWeight.BOLD),
-                        ], spacing=1, expand=True),
-                        ft.Column([
-                            ft.Text(f"{cant} u", size=13,
-                                    weight=ft.FontWeight.BOLD,
-                                    color=es.COLOR_TEXTO,
-                                    text_align=ft.TextAlign.RIGHT),
-                            ft.Text(f"👤 {m['usuario']}", size=10,
-                                    color=es.COLOR_TEXTO_TENUE,
-                                    text_align=ft.TextAlign.RIGHT),
-                        ], spacing=1,
-                            horizontal_alignment=(
-                                ft.CrossAxisAlignment.END)),
-                    ], spacing=10,
-                        vertical_alignment=(
-                            ft.CrossAxisAlignment.CENTER)),
-                    ft.Row([
-                        ft.Text(m["fecha"], size=11,
-                                color=es.COLOR_TEXTO_SUAVE),
-                        ft.Text("•", size=11,
-                                color=es.COLOR_TEXTO_TENUE),
-                        ft.Text(m["motivo"] or "—", size=11,
-                                color=es.COLOR_TEXTO_SUAVE,
+        return ft.Container(
+            content=ft.Column([
+                ft.Row([
+                    ft.Container(
+                        content=ft.Icon(ic, color="white", size=16),
+                        bgcolor=c, padding=8, border_radius=10,
+                    ),
+                    ft.Column([
+                        ft.Text(m["producto"], size=14,
+                                weight=ft.FontWeight.W_600,
                                 max_lines=1,
                                 overflow=ft.TextOverflow.ELLIPSIS,
-                                expand=True),
-                    ], spacing=6),
-                ], spacing=8),
-                padding=14,
-                bgcolor=es.COLOR_SUPERFICIE,
-                border=ft.Border.all(1, es.COLOR_BORDE),
-                border_radius=14,
-                on_click=(lambda e, mv=m:
-                          _detalle_movimiento(app, mv, refrescar))
-                if puede_editar else None,
-                ink=puede_editar,
-            ))
+                                color=es.COLOR_TEXTO),
+                        ft.Text(tipo, size=10, color=c,
+                                weight=ft.FontWeight.BOLD),
+                    ], spacing=1, expand=True),
+                    ft.Column([
+                        ft.Text(f"{cant} u", size=13,
+                                weight=ft.FontWeight.BOLD,
+                                color=es.COLOR_TEXTO,
+                                text_align=ft.TextAlign.RIGHT),
+                        ft.Text(f"👤 {m['usuario']}", size=10,
+                                color=es.COLOR_TEXTO_TENUE,
+                                text_align=ft.TextAlign.RIGHT),
+                    ], spacing=1,
+                        horizontal_alignment=(
+                            ft.CrossAxisAlignment.END)),
+                ], spacing=10,
+                    vertical_alignment=(
+                        ft.CrossAxisAlignment.CENTER)),
+                ft.Row([
+                    ft.Text(m["fecha"], size=11,
+                            color=es.COLOR_TEXTO_SUAVE),
+                    ft.Text("•", size=11,
+                            color=es.COLOR_TEXTO_TENUE),
+                    ft.Text(m["motivo"] or "—", size=11,
+                            color=es.COLOR_TEXTO_SUAVE,
+                            max_lines=1,
+                            overflow=ft.TextOverflow.ELLIPSIS,
+                            expand=True),
+                ], spacing=6),
+            ], spacing=8),
+            padding=14,
+            bgcolor=es.COLOR_SUPERFICIE,
+            border=ft.Border.all(1, es.COLOR_BORDE),
+            border_radius=14,
+            on_click=(lambda e, mv=m:
+                      _detalle_movimiento(app, mv, recargar))
+            if puede_editar else None,
+            ink=puede_editar,
+        )
 
-        if not movs:
-            lista.controls.append(empty_state(
-                ft.Icons.HISTORY_TOGGLE_OFF, "Sin movimientos",
-                "Ajusta los filtros o agrega un movimiento."))
-
-        if len(movs) >= estado["limite"]:
+    def _actualizar_boton_mas():
+        restantes = estado["total"] - estado["offset"]
+        if restantes <= 0:
+            boton_mas.content = ft.Container()
+        else:
             def cargar_mas(e):
-                estado["limite"] += PASO_PAGINACION
-                refrescar()
-            lista.controls.append(ft.Container(
+                cargar_pagina(reset=False)
+            boton_mas.content = ft.Container(
                 content=ft.TextButton(
-                    f"Cargar {PASO_PAGINACION} más  "
-                    f"(mostrando {len(movs)})",
+                    f"Cargar {min(PASO, restantes)} más "
+                    f"({restantes} restantes)",
                     icon=ft.Icons.EXPAND_MORE,
                     on_click=cargar_mas,
                     style=ft.ButtonStyle(color=es.COLOR_ACENTO),
                 ),
                 alignment=ft.Alignment.CENTER,
                 padding=20,
-            ))
+            )
+        if mounted(boton_mas):
+            boton_mas.update()
 
-        info.value = f"{len(movs)} movimiento(s)"
+    def cargar_pagina(reset=False):
+        if reset:
+            estado["offset"] = 0
+            lista.controls.clear()
+        movs = inv.listar_movimientos(
+            local_id=app.local_id,
+            texto=estado["filtro"] or None,
+            tipo=estado["tipo"],
+            offset=estado["offset"],
+            limite=PASO,
+        )
+        estado["offset"] += len(movs)
+        for m in movs:
+            lista.controls.append(_construir_fila(m))
+
+        if reset:
+            estado["total"] = inv.contar_movimientos(
+                local_id=app.local_id,
+                texto=estado["filtro"] or None,
+                tipo=estado["tipo"],
+            )
+
+        if reset and not movs:
+            lista.controls.append(empty_state(
+                ft.Icons.HISTORY_TOGGLE_OFF, "Sin movimientos",
+                "Ajusta los filtros o agrega un movimiento."))
+
+        info.value = (f"{estado['offset']} de {estado['total']} "
+                      f"movimiento(s)")
         if mounted(lista):
             lista.update()
         if mounted(info):
             info.update()
+        _actualizar_boton_mas()
+
+    def recargar():
+        cargar_pagina(reset=True)
 
     def on_search(e):
-        estado["filtro"] = (e.control.value or "").lower()
-        estado["limite"] = PASO_PAGINACION
-        refrescar()
+        estado["filtro"] = (e.control.value or "").strip()
+        recargar()
 
     cap = campo_busqueda(
         hint="Buscar por producto, código o motivo…",
@@ -198,7 +214,7 @@ def vista_movimientos(app):
     )
 
     _rebuild_filtros()
-    refrescar()
+    recargar()
 
     return ft.View(
         route="/movimientos",
@@ -210,7 +226,8 @@ def vista_movimientos(app):
                                         right=14, bottom=4),
             ),
             ft.Container(content=lista, expand=True,
-                         padding=ft.Padding.all(14)),
+                        padding=ft.Padding.all(14)),
+            boton_mas,
         ],
         appbar=ft.AppBar(
             title=ft.Text(
@@ -222,7 +239,6 @@ def vista_movimientos(app):
         navigation_bar=barra_navegacion(app, 3),
         bgcolor=es.COLOR_FONDO,
     )
-
 
 def _detalle_movimiento(app, mv, on_refresh):
     page = app.page

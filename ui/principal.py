@@ -453,6 +453,8 @@ def _dlg_renombrar_categoria(app, cat, on_done=None):
     def cancelar(e):
         cerrar_actual()
 
+    tf.on_submit = guardar
+
     contenido = ft.Column([
         ft.Text(f"Renombrar: {cat['nombre']}", size=16,
                 weight=ft.FontWeight.BOLD, color=es.COLOR_TEXTO),
@@ -590,6 +592,8 @@ def _dlg_nueva_categoria_inicio(app, on_creada=None):
     def cancelar(e):
         cerrar_actual()
 
+    tf.on_submit = guardar
+
     contenido = ft.Column([
         ft.Text("Nueva categoría", size=16,
                 weight=ft.FontWeight.BOLD, color=es.COLOR_TEXTO),
@@ -632,7 +636,9 @@ def vista_principal(app):
         try:
             lista_cont.controls.clear()
 
-            productos = inv.listar_productos(app.local_id, solo_activos=True)
+            # Filtro se aplica en Python pero sobre la lista cacheada
+            productos = inv.listar_productos(app.local_id,
+                                              solo_activos=True)
 
             if app.filtro_tipo is not None:
                 productos = [p for p in productos
@@ -649,6 +655,7 @@ def vista_principal(app):
             total_filtrado = len(productos)
             visibles = productos[:estado["visibles"]]
 
+            # Solo renderizamos los visibles
             for p in visibles:
                 lista_cont.controls.append(fila_producto(
                     p,
@@ -679,6 +686,7 @@ def vista_principal(app):
                     padding=20,
                 ))
 
+            # Resumen con totales y críticos
             t = inv.totales_local(app.local_id)
             n_rojo = sum(1 for p in productos
                          if inv.color_de_producto(p) == "rojo")
@@ -760,9 +768,8 @@ def vista_principal(app):
 
     nombre_usuario = app.usuario["username"] if app.usuario else ""
 
-    # ── Acciones de la AppBar ──
-    # El POS era un FAB abajo a la derecha y tapaba el último producto.
-    # Ahora va arriba, junto al botón de refrescar.
+    # ── Acciones de la AppBar (POS + Refresh) ──
+    # Sin FAB: usamos la AppBar para no tapar el último producto.
     acciones_appbar = []
     if puede_operar:
         acciones_appbar.append(
@@ -804,40 +811,6 @@ def vista_principal(app):
                 icon_color=es.COLOR_ACENTO),
             actions=acciones_appbar,
         ),
-        # ── Sin floating_action_button ──
-        navigation_bar=barra_navegacion(app, 0),
-        bgcolor=es.COLOR_FONDO,
-    )
-
-    return ft.View(
-        route="/principal",
-        controls=[
-            cabecera,
-            ft.Container(content=lista_cont, expand=True),
-        ],
-        appbar=ft.AppBar(
-            title=ft.Row(
-                [logo,
-                 ft.Text(f"Almacen {nombre_usuario}", size=15,
-                         color=es.COLOR_TEXTO)],
-                spacing=8,
-            ),
-            bgcolor=es.COLOR_SUPERFICIE,
-            elevation=0,
-            leading=ft.IconButton(
-                ft.Icons.MENU,
-                on_click=lambda e: app.abrir_drawer(),
-                icon_color=es.COLOR_ACENTO),
-            actions=[
-                ft.IconButton(
-                    ft.Icons.REFRESH,
-                    on_click=lambda e: (refrescar(),
-                                        snack(page, "Actualizado", "ok")),
-                    icon_color=es.COLOR_ACENTO,
-                ),
-            ],
-        ),
-        floating_action_button=fab,
         navigation_bar=barra_navegacion(app, 0),
         bgcolor=es.COLOR_FONDO,
     )

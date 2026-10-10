@@ -471,28 +471,42 @@ def buscar_producto_global_por_nombre(nombre: str) -> dict | None:
         return dict(row) if row else None
 
 
-def listar_movimientos(local_id=None, producto_id=None,
-                       limite: int = 100) -> list[dict]:
+def listar_movimientos(local_id=None, producto_id=None, texto=None,
+                    tipo=None, offset=0, limite=30) -> list[dict]:
+    """
+    Lista movimientos con filtros aplicados en SQL.
+    `tipo`: None | "ENTRADA" | "SALIDA" | "BAJA" | "TRASPASO"
+    """
     sql = ("SELECT m.*, p.nombre AS producto, p.codigo AS codigo, "
-           "l.nombre AS local FROM movimientos m "
-           "JOIN productos p ON p.id=m.producto_id "
+        "l.nombre AS local FROM movimientos m "
+        "JOIN productos p ON p.id=m.producto_id "
            "JOIN locales l ON l.id=m.local_id")
-    cond = []
-    params = []
+    cond, params = [], []
     if local_id is not None and local_id != GENERAL_ID:
         cond.append("m.local_id=?")
         params.append(local_id)
     if producto_id is not None:
         cond.append("m.producto_id=?")
         params.append(producto_id)
+    if tipo:
+        if tipo == "TRASPASO":
+            cond.append(
+                "m.tipo IN ('TRASPASO_SALIDA','TRASPASO_ENTRADA')")
+        else:
+            cond.append("m.tipo=?")
+            params.append(tipo)
+    if texto:
+        t = f"%{texto}%"
+        cond.append(
+            "(p.nombre LIKE ? OR p.codigo LIKE ? OR m.motivo LIKE ?)")
+        params += [t, t, t]
     if cond:
         sql += " WHERE " + " AND ".join(cond)
-    sql += " ORDER BY m.fecha DESC, m.id DESC LIMIT ?"
-    params.append(limite)
+    sql += " ORDER BY m.fecha DESC, m.id DESC LIMIT ? OFFSET ?"
+    params += [limite, offset]
     with get_conn() as conn:
         return [dict(r) for r in
                 conn.execute(sql, tuple(params)).fetchall()]
-
 
 # ================= EXCEPCIONES =================
 
@@ -1470,3 +1484,59 @@ def editar_movimiento(mov_id, producto_id, tipo, cantidad, motivo,
             (nuevo_prod["local_id"], nuevo_prod["id"], tipo, cantidad,
              motivo, fecha, username, mov_id))
         
+def buscar_productos_like(texto: str, local_id, limite: int = 8) -> list[dict]:
+    """
+    Busca productos activos cuyo nombre CONTENGA texto (case-insensitive).
+    Orden: por uso (nº movimientos del producto) DESC, luego por nombre.
+    """
+    texto = (texto or "").strip()
+    if not texto or local_id == GENERAL_ID:
+        return []
+    patron = f"%{texto}%"
+    sql = """
+        SELECT p.*,
+            COALESCE((
+                SELECT COUNT(*) FROM movimientos m
+                WHERE m.producto_id = p.id
+            ), 0) AS _uso
+        FROM productos p
+        WHERE p.local_id = ? AND p.activo = 1
+          AND p.nombre LIKE ? COLLATE NOCASE
+        ORDER BY _uso DESC, p.nombre COLLATE NOCASE
+        LIMIT ?
+    """
+    with get_conn() as conn:
+        return [dict(r) for r in
+                conn.execute(sql, (local_id, patron, limite)).fetchall()]
+
+
+def contar_movimientos(local_id=None, producto_id=None,
+                       texto=None, tipo=None) -> int:
+    """Cuenta total de movimientos con filtros (para saber si hay más)."""
+    sql = ("SELECT COUNT(*) AS n FROM movimientos m "
+           "JOIN productos p ON p.id=m.producto_id")
+    cond, params = [], []
+    if local_id is not None and local_id != GENERAL_ID:
+        cond.append("m.local_id=?")
+        params.append(local_id)
+    if producto_id is not None:
+        cond.append("m.producto_id=?")
+        params.append(producto_id)
+    if tipo:
+        if tipo == "TRASPASO":
+            cond.append(
+                "m.tipo IN ('TRASPASO_SALIDA','TRASPASO_ENTRADA')")
+        else:
+            cond.append("m.tipo=?")
+            params.append(tipo)
+    if texto:
+        t = f"%{texto}%"
+        cond.append(
+            "(p.nombre LIKE ? OR p.codigo LIKE ? OR m.motivo LIKE ?)")
+        params += [t, t, t]
+    if cond:
+        sql += " WHERE " + " AND ".join(cond)
+    with get_conn() as conn:
+        row = conn.execute(sql, tuple(params)).fetchone()
+    return int(row["n"] or 0)
+
