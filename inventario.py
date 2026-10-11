@@ -1163,19 +1163,22 @@ def renombrar_producto(producto_id, nombre_nuevo, usuario):
             raise ValueError(
                 f"Ya existe un producto «{nombre_nuevo}» en "
                 f"«{otro['local_nombre']}». Usa un nombre distinto.")
-        try:
-            conn.execute(
-                "UPDATE producto_proveedores SET producto_nombre=? "
-                "WHERE producto_nombre=? COLLATE NOCASE",
-                (nombre_nuevo, nombre_actual),
-            )
-        except Exception:
-            pass
+
+        # FIX: aplicar el nombre nuevo a TODOS los locales.
+        # Antes solo se registraba el AJUSTE y se actualizaban los
+        # proveedores, pero la tabla `productos` no se tocaba.
+        conn.execute(
+            "UPDATE productos SET nombre=?, fecha_ultima_mod=? "
+            "WHERE nombre=? COLLATE NOCASE",
+            (nombre_nuevo, fecha, nombre_actual),
+        )
+
         conn.execute(
             "UPDATE producto_proveedores SET producto_nombre=? "
             "WHERE producto_nombre=? COLLATE NOCASE",
             (nombre_nuevo, nombre_actual),
         )
+
         conn.execute(
             "INSERT INTO movimientos(local_id,producto_id,tipo,cantidad,"
             "detalle,fecha,usuario) VALUES(?,?,'AJUSTE',0,?,?,?)",
@@ -1330,6 +1333,12 @@ def totales_por_concepto(local_id) -> dict:
 # ================= ELIMINAR MOVIMIENTO =================
 
 def _revertir_efecto_stock(conn, producto_id, tipo, cantidad):
+    # FIX: tipos sin efecto sobre stock → se pueden borrar sin más.
+    # AJUSTE, UMBRAL y RESTAURACION se insertan con cantidad=0 y
+    # solo dejan traza; no alteran el stock.
+    if tipo in ("AJUSTE", "UMBRAL", "RESTAURACION"):
+        return
+
     if tipo == "ENTRADA":
         cambio = -float(cantidad)
     elif tipo == "SALIDA":
@@ -1539,4 +1548,3 @@ def contar_movimientos(local_id=None, producto_id=None,
     with get_conn() as conn:
         row = conn.execute(sql, tuple(params)).fetchone()
     return int(row["n"] or 0)
-

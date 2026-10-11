@@ -603,4 +603,26 @@ def editar_items_orden(orden_id, items_nuevos, usuario, fecha=None):
         "saldo_pendiente": nuevo_saldo,
     }
     
-    
+def cambiar_metodo_pago(pago_id, nuevo_metodo, usuario):
+    """Cambia el método de un pago individual. Mantiene monto y moneda."""
+    from configuracion_negocio import obtener_metodo_pago
+    m = obtener_metodo_pago(nuevo_metodo)
+    if m is None or not m["activo"]:
+        raise ValueError(f"Método de pago inválido: «{nuevo_metodo}»")
+    with get_conn() as conn:
+        p = conn.execute(
+            "SELECT * FROM pagos WHERE id=?", (pago_id,)
+        ).fetchone()
+        if p is None:
+            raise ValueError("Pago no encontrado")
+        o = conn.execute(
+            "SELECT * FROM ordenes_venta WHERE id=?", (p["orden_id"],)
+        ).fetchone()
+        if o is None:
+            raise ValueError("Orden no encontrada")
+        if o["estado"] == "anulada":
+            raise ValueError("No se puede editar una orden anulada")
+        conn.execute(
+            "UPDATE pagos SET metodo=? WHERE id=?",
+            (nuevo_metodo, pago_id),
+        )

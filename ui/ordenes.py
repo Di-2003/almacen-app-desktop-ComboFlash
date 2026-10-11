@@ -228,9 +228,9 @@ def ver_orden_detalle(app, orden_id):
     # Pagos
     if o["pagos"]:
         contenido.controls.append(ft.Divider(height=1,
-                                              color=es.COLOR_BORDE))
+        color=es.COLOR_BORDE))
         contenido.controls.append(ft.Text("Pagos", size=12,
-                                          color=es.COLOR_TEXTO_SUAVE))
+        color=es.COLOR_TEXTO_SUAVE))
         for p in o["pagos"]:
             contenido.controls.append(ft.Row([
                 ft.Text(p["metodo"], size=12, expand=True,
@@ -445,14 +445,13 @@ def _confirmar_anular(app, orden_id):
     ))
     
 def _abrir_editar_orden(app, orden_id):
-    """Abre un diálogo para editar los items de una orden."""
+    """Abre un diálogo para editar los items y pagos de una orden."""
     page = app.page
     o = ven.obtener_orden(orden_id)
     if o is None:
         snack(page, "Orden no encontrada", "error")
         return
 
-    # Estado editable (copia de los items actuales)
     items_state = []
     for it in o["items"]:
         items_state.append({
@@ -466,8 +465,7 @@ def _abrir_editar_orden(app, orden_id):
 
     contenido_col = ft.Column(spacing=8, tight=True)
     error_lbl = ft.Text("", color=es.COLOR_PELIGRO, size=12)
-    total_lbl = ft.Text("", size=16,
-                        weight=ft.FontWeight.BOLD,
+    total_lbl = ft.Text("", size=16, weight=ft.FontWeight.BOLD,
                         color=es.COLOR_ACENTO)
 
     def rebuild():
@@ -476,7 +474,6 @@ def _abrir_editar_orden(app, orden_id):
             contenido_col.controls.append(
                 _fila_item_editable(app, i, it, items_state,
                                      rebuild, total_lbl))
-        # Recalcular
         desc_pct = 0.0
         if float(o["subtotal"] or 0) > 0:
             desc_pct = (float(o["descuento_global"] or 0)
@@ -492,6 +489,12 @@ def _abrir_editar_orden(app, orden_id):
             total_lbl.update()
         except Exception:
             pass
+
+    def agregar_producto(e):
+        _dlg_agregar_producto_orden(app, items_state, rebuild)
+
+    def editar_pagos(e):
+        _dlg_editar_pagos_orden(app, orden_id)
 
     def guardar(e):
         error_lbl.value = ""
@@ -516,14 +519,29 @@ def _abrir_editar_orden(app, orden_id):
     page.show_dialog(ft.AlertDialog(
         title=ft.Text(f"Editar {o['numero_ticket']}"),
         content=ft.Column([
-            ft.Text("Modifica la cantidad o quita ítems.",
+            ft.Text("Modifica cantidad, quita o añade ítems.",
                     size=12, color=es.COLOR_TEXTO_SUAVE),
             ft.Container(height=6),
             contenido_col,
+            ft.Container(height=6),
+            ft.Row([
+                ft.OutlinedButton(
+                    "+ Producto", icon=ft.Icons.ADD,
+                    on_click=agregar_producto, expand=True,
+                    style=ft.ButtonStyle(
+                        color=es.COLOR_ACENTO,
+                        side=ft.BorderSide(1, es.COLOR_ACENTO))),
+                ft.OutlinedButton(
+                    "Pagos", icon=ft.Icons.PAYMENTS,
+                    on_click=editar_pagos, expand=True,
+                    style=ft.ButtonStyle(
+                        color=es.COLOR_ACENTO,
+                        side=ft.BorderSide(1, es.COLOR_ACENTO))),
+            ], spacing=8),
             ft.Divider(height=1, color=es.COLOR_BORDE),
             total_lbl,
             error_lbl,
-        ], tight=True, width=400, spacing=10,
+        ], tight=True, width=440, spacing=10,
             scroll=ft.ScrollMode.AUTO),
         actions=[
             ft.TextButton("Cancelar",
@@ -534,6 +552,199 @@ def _abrir_editar_orden(app, orden_id):
         actions_alignment=ft.MainAxisAlignment.END,
     ))
 
+
+def _dlg_agregar_producto_orden(app, items_state, on_done):
+    """Busca un producto y lo añade a items_state."""
+    page = app.page
+    tf_buscar = ft.TextField(
+        label="Buscar producto", autofocus=True,
+        **es.estilo_textfield(12), height=54)
+    lista = ft.Column(spacing=4, scroll=ft.ScrollMode.AUTO, height=280)
+
+    def rebuild(q=""):
+        lista.controls.clear()
+        q = (q or "").strip().lower()
+        if not q:
+            if mounted(lista):
+                lista.update()
+            return
+        prods = inv.listar_productos(app.local_id, solo_activos=True)
+        matches = [p for p in prods
+                   if q in p["nombre"].lower()
+                   or q in (p.get("codigo") or "").lower()][:20]
+        for p in matches:
+            def elegir(e, prod=p):
+                page.pop_dialog()
+                _dlg_cantidad_producto_orden(
+                    app, prod, items_state, on_done)
+            lista.controls.append(ft.Container(
+                content=ft.Row([
+                    ft.Column([
+                        ft.Text(p["nombre"], size=13,
+                                color=es.COLOR_TEXTO,
+                                weight=ft.FontWeight.W_600),
+                        ft.Text(
+                            f"{p.get('codigo') or '—'}  ·  "
+                            f"Stock {inv.fmt_cantidad(p['stock'])}  ·  "
+                            f"${inv.fmt_precio(p['precio_unitario'])}",
+                            size=11, color=es.COLOR_TEXTO_SUAVE),
+                    ], spacing=2, expand=True),
+                    ft.Icon(ft.Icons.ADD_CIRCLE,
+                            color=es.COLOR_EXITO, size=24),
+                ], spacing=8),
+                padding=10, bgcolor=es.COLOR_SUPERFICIE_2,
+                border_radius=8, on_click=elegir, ink=True))
+        if not matches:
+            lista.controls.append(ft.Text("Sin coincidencias", size=12,
+                                          color=es.COLOR_TEXTO_SUAVE))
+        if mounted(lista):
+            lista.update()
+
+    tf_buscar.on_change = lambda e: rebuild(e.control.value)
+
+    page.show_dialog(ft.AlertDialog(
+        title=ft.Text("Agregar producto"),
+        content=ft.Column([tf_buscar, lista],
+                          tight=True, width=380, spacing=10),
+        actions=[ft.TextButton("Cancelar",
+                               on_click=lambda e: page.pop_dialog())],
+        actions_alignment=ft.MainAxisAlignment.END,
+    ))
+
+
+def _dlg_cantidad_producto_orden(app, prod, items_state, on_done):
+    """Pide cantidad y añade (o suma) el producto a items_state."""
+    page = app.page
+    tf_c = ft.TextField(label="Cantidad", value="1",
+                        keyboard_type=ft.KeyboardType.NUMBER,
+                        autofocus=True,
+                        **es.estilo_textfield(12), height=54)
+    error_lbl = ft.Text("", color=es.COLOR_PELIGRO, size=12)
+
+    existente = next((it for it in items_state
+                      if it["producto_id"] == prod["id"]), None)
+
+    def guardar(e):
+        error_lbl.value = ""
+        try:
+            c = float((tf_c.value or "0").replace(",", "."))
+        except ValueError:
+            error_lbl.value = "Cantidad inválida"
+            page.update()
+            return
+        if c <= 0:
+            error_lbl.value = "Debe ser mayor que 0"
+            page.update()
+            return
+        if existente:
+            existente["cantidad"] += c
+        else:
+            items_state.append({
+                "producto_id": prod["id"],
+                "nombre": prod["nombre"],
+                "codigo": prod.get("codigo"),
+                "precio_unitario": float(prod["precio_unitario"] or 0),
+                "cantidad": c,
+                "rebaja": 0.0,
+            })
+        page.pop_dialog()
+        on_done()
+
+    tf_c.on_submit = guardar
+
+    page.show_dialog(ft.AlertDialog(
+        title=ft.Text(f"Añadir {prod['nombre']}"),
+        content=ft.Column([
+            ft.Text(f"Stock: {inv.fmt_cantidad(prod['stock'])}",
+                    size=12, color=es.COLOR_TEXTO_SUAVE),
+            tf_c, error_lbl,
+        ], tight=True, width=320, spacing=10),
+        actions=[
+            ft.TextButton("Cancelar",
+                          on_click=lambda e: page.pop_dialog()),
+            ft.FilledButton("Añadir", on_click=guardar,
+                            style=es.estilo_boton_marca()),
+        ],
+        actions_alignment=ft.MainAxisAlignment.END,
+    ))
+
+
+def _dlg_editar_pagos_orden(app, orden_id):
+    """Lista los pagos y permite cambiar el método de cada uno."""
+    page = app.page
+    from configuracion_negocio import listar_metodos_pago
+    metodos = listar_metodos_pago(solo_activos=True)
+
+    lista_col = ft.Column(spacing=8, tight=True)
+
+    def rebuild():
+        lista_col.controls.clear()
+        o = ven.obtener_orden(orden_id)
+        if not o or not o["pagos"]:
+            lista_col.controls.append(ft.Text(
+                "Sin pagos registrados.", size=12,
+                color=es.COLOR_TEXTO_SUAVE))
+        else:
+            for p in o["pagos"]:
+                lista_col.controls.append(_fila_pago_edit(
+                    app, p, metodos, rebuild))
+        if mounted(lista_col):
+            lista_col.update()
+
+    rebuild()
+
+    page.show_dialog(ft.AlertDialog(
+        title=ft.Text("Editar métodos de pago"),
+        content=ft.Column([
+            ft.Text("Cambia el método de cada pago.",
+                    size=12, color=es.COLOR_TEXTO_SUAVE),
+            ft.Container(height=6),
+            lista_col,
+        ], tight=True, width=400, spacing=8,
+            scroll=ft.ScrollMode.AUTO),
+        actions=[ft.FilledButton("Cerrar",
+                                 on_click=lambda e: page.pop_dialog(),
+                                 style=es.estilo_boton_marca())],
+        actions_alignment=ft.MainAxisAlignment.END,
+    ))
+
+
+def _fila_pago_edit(app, p, metodos, on_refresh):
+    page = app.page
+
+    def cambiar_metodo(e):
+        nuevo = dd.value
+        if not nuevo or nuevo == p["metodo"]:
+            return
+        try:
+            ven.cambiar_metodo_pago(p["id"], nuevo, app.usuario)
+        except Exception as ex:
+            snack(page, str(ex), "error")
+            return
+        snack(page, "Método actualizado", "ok")
+        on_refresh()
+
+    dd = ft.Dropdown(
+        value=p["metodo"],
+        options=[ft.DropdownOption(key=m["clave"], text=m["etiqueta"])
+                 for m in metodos],
+        on_change=cambiar_metodo,
+        dense=True, **es.borde_textfield(10))
+
+    return ft.Container(
+        content=ft.Column([
+            ft.Row([
+                ft.Text(f"{p['monto']:.2f} {p['moneda']}",
+                        size=13, color=es.COLOR_TEXTO,
+                        weight=ft.FontWeight.BOLD),
+                ft.Text(f"= ${p['monto_cup']:,.2f} CUP",
+                        size=11, color=es.COLOR_TEXTO_SUAVE,
+                        expand=True),
+            ], spacing=8),
+            dd,
+        ], spacing=4),
+        padding=10, bgcolor=es.COLOR_SUPERFICIE_2,
+        border_radius=8)
 
 def _fila_item_editable(app, idx, it, items_state, rebuild, total_lbl):
     """Fila editable: producto + cantidad + botón quitar."""
@@ -591,4 +802,5 @@ def _fila_item_editable(app, idx, it, items_state, rebuild, total_lbl):
         bgcolor=es.COLOR_SUPERFICIE_2,
         border_radius=10,
     ) 
-    
+
+
