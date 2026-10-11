@@ -1,27 +1,46 @@
 """
-Excel sync v4 — Almacén Combos Flash.
+Excel sync v4.4 — Almacén Combos Flash.
 
 FIXES v3 → v4:
-  #1  Ventas (histórico + diario): excluir Fondo CUP/USD del filtro.
+  #1  Ventas (histórico + diario): excluir Fondo CUP/USD.
   #2  Ventas histórico: TOTAL DEL PERÍODO incluye Cantidad total.
-  #3  Movs histórico: "Merma" solo cuenta BAJA y SALIDA con motivo Merma.
-  #4  Salidas: "Error" ya no se clasifica como Merma (col Tipo honesta).
+  #3  Movs histórico: "Merma" solo BAJA y SALIDA con motivo Merma.
+  #4  Salidas: "Error" ya no se clasifica como Merma.
   #5  Salidas: total mermas refleja solo mermas reales.
-  #6  Diario: distinguir visualmente BAJA por Error vs Merma.
+  #6  Diario: distinguir visualmente BAJA Error vs Merma.
   #7  Movs histórico: TOTAL DEL DÍA incluye cantidad total.
 
 FIXES v4 → v4.1:
   #11 Movs histórico: excluir Fondos del total de ventas.
-  #12 Salidas (3 tablas): excluir Fondos del listado VENTAS.
-  #13 Salidas (3 tablas): OTRAS incluye TODO lo que no sea ENTRADA ni
-      venta (antes desaparecían las salidas de fondos con motivo
-      TANIA/CHABELY/ERIK/NEYLIN/GAJO/...). Ahora salidas cuadra con
-      diario en número de movs.
-  #14 Movs histórico: Precio U. vacío cuando es 0 (como en diario).
-  #15 Movs histórico: pintar en rojo TODA merma (SALIDA o BAJA),
-      no solo BAJA.
-  #16 _es_merma solo acepta BAJA/SALIDA (una ENTRADA con motivo
-      'Merma' ya no contaría como merma).
+  #12 Salidas: excluir Fondos del listado VENTAS.
+  #13 Salidas: OTRAS incluye TODO lo que no sea ENTRADA ni venta.
+  #14 Movs histórico: Precio U. vacío cuando es 0.
+  #15 Movs histórico: pintar en rojo TODA merma (SALIDA o BAJA).
+  #16 _es_merma solo acepta BAJA/SALIDA.
+
+FIXES v4.1 → v4.2:
+  #17 Excluir movs de órdenes anuladas en todas las consultas.
+  #18 Salidas: barras de título con fondo fuerte (texto blanco).
+  #19 Tabla "Fondos CUP/USD" con saldo acumulado.
+
+FIXES v4.2 → v4.3:
+  #20 Quitar tabla de fondos redundante:
+      - _hoja_productos_local  (duplicaba Movs_Almacén)
+      - _hoja_ventas_local     (duplicaba Movs_Almacén)
+      - _hoja_ventas_dia_local (duplicaba diario.Resumen)
+      Se mantiene solo en:
+      - inventario.Resumen     (consolidado histórico)
+      - inventario.Movs_{Local} (histórico por local)
+      - diario.Resumen         (día, todos los locales)
+
+FIXES v4.3 → v4.4:
+  #21 auto_filter con rango explícito (antes usaba `fila - 3`
+      que quedaba desfasado al añadir la tabla de fondos):
+      - inventario.Resumen        → A3:F{total_resumen}
+      - inventario.Movs_{Local}   → A3:I{total_periodo}
+      - diario.Resumen            → A3:J{total_general}
+      Ahora el filtro cubre header + datos + total, sin
+      arrastrar filas en blanco ni la tabla de fondos.
 """
 import io
 from datetime import datetime
@@ -48,6 +67,14 @@ COLOR_SALIDA_BG  = "FFFFF3E0"
 COLOR_MERMA_BG   = "FFFFEBEE"
 COLOR_ALERTA_BG  = "FFFFF59D"
 
+# FIX #18: colores fuertes para las barras de título de _hoja_3_tablas
+COLOR_TITULO_ENTRADA = "FF0284C7"   # azul fuerte
+COLOR_TITULO_VENTAS  = "FFD97706"   # ámbar fuerte
+COLOR_TITULO_OTRAS   = "FFDC2626"   # rojo fuerte
+
+# FIX #19: color de la cabecera de la tabla de fondos
+COLOR_TITULO_FONDOS  = "FF0F766E"   # teal fuerte
+
 BORDE_FINO = Border(
     left=Side(style="thin", color="FFB0BEC5"),
     right=Side(style="thin", color="FFB0BEC5"),
@@ -58,10 +85,11 @@ BORDE_FINO = Border(
 _FONT_HEADER      = Font(bold=True, color=COLOR_HEADER_FG, size=10)
 _FONT_TITULO      = Font(bold=True, size=12, color=COLOR_TITULO)
 _FONT_BOLD        = Font(bold=True)
-_FONT_BOLD_MERMA  = Font(bold=True, color=COLOR_MERMA)
 _FONT_BOLD_TITULO = Font(bold=True, color=COLOR_TITULO)
 _FONT_ITALIC_GREY = Font(italic=True, color="FF888888")
 _FONT_MERMA       = Font(color=COLOR_MERMA)
+_FONT_ENTRADA     = Font(color="FF0284C7", bold=True)
+_FONT_SALIDA      = Font(color="FFDC2626", bold=True)
 
 _FILL_HEADER  = PatternFill("solid", fgColor=COLOR_HEADER_BG)
 _FILL_TOTAL   = PatternFill("solid", fgColor=COLOR_TOTAL_BG)
@@ -70,6 +98,11 @@ _FILL_ENTRADA = PatternFill("solid", fgColor=COLOR_ENTRADA_BG)
 _FILL_SALIDA  = PatternFill("solid", fgColor=COLOR_SALIDA_BG)
 _FILL_MERMA   = PatternFill("solid", fgColor=COLOR_MERMA_BG)
 _FILL_ALERTA  = PatternFill("solid", fgColor=COLOR_ALERTA_BG)
+
+_FILL_TITULO_ENTRADA = PatternFill("solid", fgColor=COLOR_TITULO_ENTRADA)
+_FILL_TITULO_VENTAS  = PatternFill("solid", fgColor=COLOR_TITULO_VENTAS)
+_FILL_TITULO_OTRAS   = PatternFill("solid", fgColor=COLOR_TITULO_OTRAS)
+_FILL_TITULO_FONDOS  = PatternFill("solid", fgColor=COLOR_TITULO_FONDOS)
 
 _ALIGN_CENTER = Alignment(horizontal="center", vertical="center")
 _ALIGN_RIGHT  = Alignment(horizontal="right", vertical="center")
@@ -83,8 +116,12 @@ _NUM_2DEC = '#,##0.00'
 # ══════════════════════════════════════════════════════════
 VENTA_MOTIVOS = ("combos", "venta")
 _SQL_VENTA = "LOWER(TRIM(COALESCE(m.motivo,''))) IN ('combos','venta')"
-# FIX #1: excluir fondos monetarios de las ventas
 _SQL_NO_FONDO = "LOWER(COALESCE(p.nombre,'')) NOT LIKE 'fondo%'"
+_SQL_NO_ANULADA = (
+    "NOT EXISTS (SELECT 1 FROM ordenes_venta o "
+    "WHERE o.estado='anulada' "
+    "AND m.detalle = 'Ticket ' || o.numero_ticket)"
+)
 
 
 def _es_venta(motivo) -> bool:
@@ -92,12 +129,6 @@ def _es_venta(motivo) -> bool:
 
 
 def _es_merma(motivo, tipo=None) -> bool:
-    """
-    FIX #3/#4/#5/#16: 'Merma' es solo BAJA o SALIDA con motivo 'Merma'.
-    - Error NO cuenta.
-    - Pantry / Gajo / TANIA / ERIK / etc NO cuentan.
-    - ENTRADA con motivo 'Merma' NO cuenta (fix #16).
-    """
     if tipo not in ("BAJA", "SALIDA"):
         return False
     m = (motivo or "").strip().lower()
@@ -221,18 +252,13 @@ def _cargar_movs_local(local_id) -> list[dict]:
             "JOIN productos p ON p.id=m.producto_id "
             "WHERE m.local_id=? "
             "AND m.tipo IN ('ENTRADA','SALIDA','BAJA') "
-            "AND NOT EXISTS ("
-            "  SELECT 1 FROM ordenes_venta o "
-            "  WHERE o.estado='anulada' "
-            "  AND m.detalle = 'Ticket ' || o.numero_ticket"
-            ") "
+            f"AND {_SQL_NO_ANULADA} "
             "ORDER BY m.fecha ASC, m.id ASC",
             (local_id,)).fetchall()
     return [dict(r) for r in filas]
 
 
 def _cargar_ventas_local(local_id) -> list[dict]:
-    """FIX #1: excluir Fondo CUP/USD (contaminan totales de cantidad)."""
     with get_conn() as conn:
         filas = conn.execute(
             "SELECT m.fecha, m.cantidad, m.rebaja, "
@@ -244,9 +270,126 @@ def _cargar_ventas_local(local_id) -> list[dict]:
             "AND m.tipo='SALIDA' "
             f"AND {_SQL_VENTA} "
             f"AND {_SQL_NO_FONDO} "
+            f"AND {_SQL_NO_ANULADA} "
             "ORDER BY m.fecha ASC, m.id ASC",
             (local_id,)).fetchall()
     return [dict(r) for r in filas]
+
+
+def _cargar_movs_fondos(local_id=None, desde=None, hasta=None) -> list[dict]:
+    sql = ("SELECT m.fecha, m.tipo, m.cantidad, m.motivo, m.usuario, "
+           "       p.nombre AS producto "
+           "FROM movimientos m "
+           "JOIN productos p ON p.id=m.producto_id "
+           "WHERE LOWER(p.nombre) LIKE 'fondo%' "
+           "AND m.tipo IN ('ENTRADA','SALIDA')")
+    params = []
+    if local_id is not None and local_id != GENERAL_ID:
+        sql += " AND m.local_id=?"
+        params.append(local_id)
+    if desde:
+        sql += " AND m.fecha >= ?"
+        params.append(desde)
+    if hasta:
+        sql += " AND m.fecha < ?"
+        params.append(hasta)
+    sql += " ORDER BY m.fecha ASC, m.id ASC"
+    with get_conn() as conn:
+        return [dict(r) for r in
+                conn.execute(sql, tuple(params)).fetchall()]
+
+
+# ══════════════════════════════════════════════════════════
+# TABLA DE FONDOS (solo se usa donde NO es redundante)
+# ══════════════════════════════════════════════════════════
+def _escribir_tabla_fondos(ws, fila_ini, movs, titulo,
+                            col_ini=1, col_fin=7,
+                            etiqueta_saldo="Saldo"):
+    """
+    Escribe una tabla con:
+      Fecha | Fondo | Tipo | Cantidad | Motivo | Usuario | <etiqueta_saldo>
+    `etiqueta_saldo` permite poner "Neto del día" para tablas diarias
+    en vez de "Saldo" (que en tablas diarias puede confundir).
+    Devuelve la fila siguiente tras la tabla.
+    """
+    # Barra de título
+    c = ws.cell(row=fila_ini, column=col_ini, value=titulo)
+    c.font = _FONT_HEADER
+    ws.merge_cells(start_row=fila_ini, start_column=col_ini,
+                   end_row=fila_ini, end_column=col_fin)
+    for col in range(col_ini, col_fin + 1):
+        cc = ws.cell(row=fila_ini, column=col)
+        cc.fill = _FILL_TITULO_FONDOS
+        cc.border = BORDE_FINO
+        cc.alignment = _ALIGN_CENTER
+    ws.row_dimensions[fila_ini].height = 22
+    fila = fila_ini + 1
+
+    # Encabezados
+    encabezados = ["Fecha", "Fondo", "Tipo", "Cantidad",
+                   "Motivo", "Usuario", etiqueta_saldo]
+    for i, txt in enumerate(encabezados):
+        cc = ws.cell(row=fila, column=col_ini + i, value=txt)
+        cc.font = _FONT_HEADER
+        cc.fill = _FILL_HEADER
+        cc.alignment = _ALIGN_CENTER
+        cc.border = BORDE_FINO
+    ws.row_dimensions[fila].height = 22
+    fila += 1
+
+    if not movs:
+        cc = ws.cell(row=fila, column=col_ini,
+                     value="Sin movimientos de fondos en el período.")
+        cc.font = _FONT_ITALIC_GREY
+        ws.merge_cells(start_row=fila, start_column=col_ini,
+                       end_row=fila, end_column=col_fin)
+        return fila + 2
+
+    saldos = {}
+    for m in movs:
+        fondo = m["producto"]
+        cant = float(m["cantidad"] or 0)
+        if m["tipo"] == "ENTRADA":
+            saldos[fondo] = saldos.get(fondo, 0.0) + cant
+            fuente = _FONT_ENTRADA
+        else:
+            saldos[fondo] = saldos.get(fondo, 0.0) - cant
+            fuente = _FONT_SALIDA
+
+        vals = [
+            m["fecha"], fondo, m["tipo"], cant,
+            m["motivo"] or "", m["usuario"], saldos[fondo],
+        ]
+        for i, v in enumerate(vals):
+            cc = ws.cell(row=fila, column=col_ini + i, value=v)
+            cc.border = BORDE_FINO
+            cc.font = fuente
+            if i in (0, 1, 2, 5):
+                cc.alignment = _ALIGN_CENTER
+            elif i in (3, 6):
+                cc.alignment = _ALIGN_RIGHT
+                cc.number_format = _NUM_2DEC
+            else:
+                cc.alignment = _ALIGN_LEFT
+        fila += 1
+
+    # Fila resumen por fondo
+    fila += 1
+    for fondo, saldo in sorted(saldos.items()):
+        cc = ws.cell(row=fila, column=col_ini,
+                     value=f"{etiqueta_saldo} {fondo}")
+        cc.font = _FONT_BOLD_TITULO
+        cc.alignment = _ALIGN_LEFT
+        cc2 = ws.cell(row=fila, column=col_ini + 6, value=saldo)
+        cc2.font = _FONT_BOLD
+        cc2.alignment = _ALIGN_RIGHT
+        cc2.number_format = _NUM_2DEC
+        for col in range(col_ini, col_fin + 1):
+            ws.cell(row=fila, column=col).border = BORDE_FINO
+            ws.cell(row=fila, column=col).fill = _FILL_TOTAL
+        fila += 1
+
+    return fila + 1
 
 
 # ══════════════════════════════════════════════════════════
@@ -301,9 +444,22 @@ def _hoja_resumen_inventario(ws, locales):
         6: (tot_prod, None),
     }, col_ini=1, col_fin=6, fill=_FILL_TOTAL)
 
-    _anchos(ws, [26, 16, 20, 16, 12, 12])
+    # FIX #21: guardo la fila del total ANTES de escribir la tabla de
+    # fondos, para que el auto_filter apunte al rango correcto.
+    fila_total_resumen = fila
+
+    # Tabla de fondos consolidada (único sitio histórico global)
+    fila += 2
+    movs_fondos = _cargar_movs_fondos(local_id=None)
+    _escribir_tabla_fondos(
+        ws, fila, movs_fondos,
+        "FONDOS CUP/USD — Histórico consolidado",
+        col_ini=1, col_fin=7, etiqueta_saldo="Saldo")
+
+    _anchos(ws, [26, 16, 20, 16, 12, 12, 16])
     ws.freeze_panes = f"A{FILA_HEADER + 1}"
-    ws.auto_filter.ref = f"A{FILA_HEADER}:F{fila - 1}"
+    # FIX #21: rango explícito, cubre header + data + TOTAL.
+    ws.auto_filter.ref = f"A{FILA_HEADER}:F{fila_total_resumen}"
 
 
 # ══════════════════════════════════════════════════════════
@@ -378,6 +534,7 @@ def _hoja_productos_local(ws, local, productos):
     ws.merge_cells("A2:J2")
     ws.row_dimensions[2].height = 20
 
+    # FIX #20: sin tabla de fondos (redundante con Movs_Almacén)
     _anchos(ws, [14, 32, 10, 12, 14, 16, 14, 14, 14, 10])
     ws.freeze_panes = f"A{FILA_HEADER + 1}"
     ws.auto_filter.ref = f"A{FILA_HEADER}:J{fila}"
@@ -425,7 +582,6 @@ def _hoja_movs_local(ws, local, movs):
             es_baja = m["tipo"] == "BAJA"
             es_merma = _es_merma(m["motivo"], m["tipo"])
             es_error = (m["motivo"] or "").strip().lower() == "error"
-            # FIX #11: excluir Fondos del total de ventas
             es_venta = (
                 m["tipo"] == "SALIDA"
                 and _es_venta(m["motivo"])
@@ -443,7 +599,6 @@ def _hoja_movs_local(ws, local, movs):
 
             valores = [
                 m["tipo"], m.get("codigo") or "", m["producto"], cant,
-                # FIX #14: Precio U. vacío si es 0 (consistente con diario)
                 _r2(pu) if (pu and m["tipo"] in ("SALIDA", "BAJA")) else "",
                 _r2(reb) if es_venta else "",
                 total_venta, m["motivo"] or "", m["fecha"],
@@ -451,7 +606,6 @@ def _hoja_movs_local(ws, local, movs):
             for col, val in enumerate(valores, 1):
                 c = ws.cell(row=fila, column=col, value=val)
                 c.border = BORDE_FINO
-                # FIX #15: pintar toda merma en rojo (SALIDA o BAJA)
                 if es_merma:
                     c.font = _FONT_MERMA
                 elif es_error:
@@ -494,9 +648,22 @@ def _hoja_movs_local(ws, local, movs):
         },
         col_ini=1, col_fin=9, fill=_FILL_TOTAL)
 
+    # FIX #21: guardo la fila del TOTAL DEL PERÍODO antes de los fondos
+    fila_total_periodo = fila
+
+    # Tabla de fondos del local (único sitio histórico por local)
+    fila += 2
+    movs_fondos = _cargar_movs_fondos(local_id=local["id"])
+    _escribir_tabla_fondos(
+        ws, fila, movs_fondos,
+        f"FONDOS CUP/USD — {local['nombre']} (Histórico)",
+        col_ini=1, col_fin=7, etiqueta_saldo="Saldo")
+
     _anchos(ws, [14, 12, 32, 10, 14, 12, 14, 18, 20])
     ws.freeze_panes = f"A{FILA_HEADER + 1}"
-    ws.auto_filter.ref = f"A{FILA_HEADER}:I{fila}"
+    # FIX #21: filtro solo hasta el TOTAL DEL PERÍODO, sin arrastrar
+    # filas en blanco ni la tabla de fondos.
+    ws.auto_filter.ref = f"A{FILA_HEADER}:I{fila_total_periodo}"
 
 
 # ══════════════════════════════════════════════════════════
@@ -569,7 +736,6 @@ def _hoja_ventas_local(ws, local, movs):
         fila += 1
 
     fila += 1
-    # FIX #2: TOTAL DEL PERÍODO incluye cantidad
     _fila_total(
         ws, fila, "TOTAL DEL PERÍODO",
         valores={
@@ -579,6 +745,7 @@ def _hoja_ventas_local(ws, local, movs):
         },
         col_ini=1, col_fin=7, fill=_FILL_TOTAL)
 
+    # FIX #20: sin tabla de fondos (redundante con Movs_Almacén)
     _anchos(ws, [12, 32, 10, 12, 10, 14, 20])
     ws.freeze_panes = f"A{FILA_HEADER + 1}"
     ws.auto_filter.ref = f"A{FILA_HEADER}:G{fila}"
@@ -640,7 +807,7 @@ def generar_excel_diario() -> bytes:
 
 def _hoja_movs_dia_general(ws, hoy):
     _titulo_hoja(ws, 10,
-                f"Movimientos del día — {hoy} — Todos los locales")
+                 f"Movimientos del día — {hoy} — Todos los locales")
     FILA_HEADER = 3
     _encabezado(ws, FILA_HEADER, [
         "Hora", "Local", "Tipo", "Código", "Producto",
@@ -658,11 +825,7 @@ def _hoja_movs_dia_general(ws, hoy):
             "JOIN locales l ON l.id=m.local_id "
             "WHERE DATE(m.fecha)=? "
             "AND m.tipo IN ('ENTRADA','SALIDA','BAJA') "
-            "AND NOT EXISTS ("
-            "  SELECT 1 FROM ordenes_venta o "
-            "  WHERE o.estado='anulada' "
-            "  AND m.detalle = 'Ticket ' || o.numero_ticket"
-            ") "
+            f"AND {_SQL_NO_ANULADA} "
             "ORDER BY l.nombre COLLATE NOCASE, m.fecha ASC, m.id ASC",
             (hoy,)).fetchall()
     movs = [dict(r) for r in filas]
@@ -673,7 +836,7 @@ def _hoja_movs_dia_general(ws, hoy):
                     value="Sin movimientos registrados hoy.")
         c.font = _FONT_ITALIC_GREY
         ws.merge_cells(start_row=fila, start_column=1,
-                       end_row=fila, end_column=10)
+                    end_row=fila, end_column=10)
         _anchos(ws, [10, 16, 12, 12, 30, 10, 12, 12, 14, 22])
         return
 
@@ -703,7 +866,6 @@ def _hoja_movs_dia_general(ws, hoy):
 
             total_venta = ""
 
-            # ── Clasificación EXCLUYENTE (un solo if/elif) ──
             if m["tipo"] == "ENTRADA":
                 n_e += 1
             elif es_venta:
@@ -718,10 +880,8 @@ def _hoja_movs_dia_general(ws, hoy):
                 else:
                     n_o += 1
             elif es_baja:
-                # BAJA con motivo distinto a Merma (ej: Error)
                 n_b += 1
             else:
-                # SALIDA con motivo no-venta y no-merma (Pantry, Gajo, ...)
                 n_o += 1
 
             valores = [
@@ -776,9 +936,24 @@ def _hoja_movs_dia_general(ws, hoy):
         10: (f"Merma: ${_r2(tot_merma_g):,.2f}", None),
     }, col_ini=1, col_fin=10, fill=_FILL_TOTAL)
 
+    # FIX #21: guardo la fila del TOTAL GENERAL antes de los fondos
+    fila_total_general = fila
+
+    # Tabla de fondos del día (único sitio diario, todos los locales)
+    fila += 2
+    movs_fondos = _cargar_movs_fondos(
+        local_id=None, desde=hoy + " 00:00:00",
+        hasta=hoy + " 23:59:59")
+    _escribir_tabla_fondos(
+        ws, fila, movs_fondos,
+        f"FONDOS CUP/USD — Día {hoy} (todos los locales)",
+        col_ini=1, col_fin=7, etiqueta_saldo="Neto del día")
+
     _anchos(ws, [10, 16, 12, 12, 30, 10, 12, 12, 14, 22])
     ws.freeze_panes = f"A{FILA_HEADER + 1}"
-    ws.auto_filter.ref = f"A{FILA_HEADER}:J{fila}"
+    # FIX #21: filtro solo hasta el TOTAL GENERAL, sin arrastrar
+    # filas en blanco ni la tabla de fondos.
+    ws.auto_filter.ref = f"A{FILA_HEADER}:J{fila_total_general}"
 
 
 def _hoja_ventas_dia_local(ws, local, hoy):
@@ -791,7 +966,6 @@ def _hoja_ventas_dia_local(ws, local, hoy):
     ])
 
     with get_conn() as conn:
-        # FIX #1: excluir Fondo del diario
         filas = conn.execute(
             "SELECT m.fecha, m.cantidad, m.rebaja, "
             "       m.precio_unitario_momento, "
@@ -802,6 +976,7 @@ def _hoja_ventas_dia_local(ws, local, hoy):
             "AND m.tipo='SALIDA' "
             f"AND {_SQL_VENTA} "
             f"AND {_SQL_NO_FONDO} "
+            f"AND {_SQL_NO_ANULADA} "
             "ORDER BY m.fecha ASC, m.id ASC",
             (local["id"], hoy)).fetchall()
     ventas = [dict(r) for r in filas]
@@ -851,9 +1026,10 @@ def _hoja_ventas_dia_local(ws, local, hoy):
         },
         col_ini=1, col_fin=7, fill=_FILL_TOTAL)
 
+    # FIX #20: sin tabla de fondos (redundante con diario.Resumen)
     _anchos(ws, [12, 32, 10, 12, 10, 14, 10])
     ws.freeze_panes = f"A{FILA_HEADER + 1}"
-    ws.auto_filter.ref = f"A{FILA_HEADER}:G{fila - 1}"
+    ws.auto_filter.ref = f"A{FILA_HEADER}:G{fila}"
 
 
 # ══════════════════════════════════════════════════════════
@@ -903,25 +1079,18 @@ def _hoja_3_tablas(ws, local, hoy):
             "JOIN productos p ON p.id=m.producto_id "
             "WHERE m.local_id=? AND DATE(m.fecha)=? "
             "AND m.tipo IN ('ENTRADA','SALIDA','BAJA') "
-            "AND NOT EXISTS ("
-            "  SELECT 1 FROM ordenes_venta o "
-            "  WHERE o.estado='anulada' "
-            "  AND m.detalle = 'Ticket ' || o.numero_ticket"
-            ") "
+            f"AND {_SQL_NO_ANULADA} "
             "ORDER BY m.fecha ASC, m.id ASC",
             (local["id"], hoy)).fetchall()
     movs = [dict(r) for r in filas]
 
     entradas = [m for m in movs if m["tipo"] == "ENTRADA"]
-    # FIX #12: excluir fondos del listado de VENTAS
     ventas = [
         m for m in movs
         if m["tipo"] == "SALIDA"
         and _es_venta(m["motivo"])
         and not _es_fondo(m["producto"])
     ]
-    # FIX #13: OTRAS = todo lo que no sea ENTRADA ni venta.
-    # Antes se comía las salidas de fondos con motivo TANIA/CHABELY/etc.
     ventas_ids = {id(m) for m in ventas}
     otras = [
         m for m in movs
@@ -929,9 +1098,9 @@ def _hoja_3_tablas(ws, local, hoy):
     ]
 
     titulos = [
-        (1, 5, "ENTRADAS", _FILL_ENTRADA),
-        (7, 12, "VENTAS (Combos)", _FILL_SALIDA),
-        (14, 19, "OTRAS SALIDAS (mermas, movs varios)", _FILL_MERMA),
+        (1, 5, "ENTRADAS", _FILL_TITULO_ENTRADA),
+        (7, 12, "VENTAS (Combos)", _FILL_TITULO_VENTAS),
+        (14, 19, "OTRAS SALIDAS (mermas, movs varios)", _FILL_TITULO_OTRAS),
     ]
     for (start, end, titulo, fill) in titulos:
         ws.cell(row=TITULO_ROW, column=start, value=titulo)
@@ -990,7 +1159,6 @@ def _hoja_3_tablas(ws, local, hoy):
     _fila_total(ws, f_ent, etiq_ent, {
         3: (sum_prods, None),
     }, col_ini=1, col_fin=5, fill=_FILL_TOTAL)
-    f_ent_total = f_ent
 
     # Tabla 2: VENTAS
     f_ven = DATA_ROW
@@ -1023,7 +1191,6 @@ def _hoja_3_tablas(ws, local, hoy):
         11: (_r2(reb_total), _NUM_2DEC),
         12: (_r2(venta_total), _NUM_2DEC),
     }, col_ini=7, col_fin=12, fill=_FILL_TOTAL)
-    f_ven_total = f_ven
 
     # Tabla 3: OTRAS SALIDAS
     f_otr = DATA_ROW
@@ -1036,7 +1203,6 @@ def _hoja_3_tablas(ws, local, hoy):
         reb = float(m["rebaja"] or 0)
         monto = _r2((pu - reb) * cant)
         motivo = (m["motivo"] or "").strip().lower()
-        # FIX #4/#5: clasificar honestamente
         if motivo == "error":
             tipo_txt = "Error"
             error_rows += 1
@@ -1079,7 +1245,6 @@ def _hoja_3_tablas(ws, local, hoy):
     _fila_total(ws, f_otr, etiq_otr,
                 valores={19: (_r2(merma_total), _NUM_2DEC)},
                 col_ini=14, col_fin=19, fill=_FILL_TOTAL)
-    f_otr_total = f_otr
 
     _anchos(ws, [
         12, 26, 8, 12, 8,
