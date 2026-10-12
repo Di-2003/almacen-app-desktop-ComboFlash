@@ -443,7 +443,8 @@ def _confirmar_anular(app, orden_id):
         ],
         actions_alignment=ft.MainAxisAlignment.END,
     ))
-    
+
+
 def _abrir_editar_orden(app, orden_id):
     """Abre un diálogo para editar los items y pagos de una orden."""
     page = app.page
@@ -670,12 +671,13 @@ def _dlg_cantidad_producto_orden(app, prod, items_state, on_done):
 
 
 def _dlg_editar_pagos_orden(app, orden_id):
-    """Lista los pagos y permite cambiar el método de cada uno."""
+    """Lista pagos + agregar/eliminar. Solo método y moneda editables."""
     page = app.page
     from configuracion_negocio import listar_metodos_pago
     metodos = listar_metodos_pago(solo_activos=True)
 
     lista_col = ft.Column(spacing=8, tight=True)
+    resumen_lbl = ft.Text("", size=12, color=es.COLOR_TEXTO_SUAVE)
 
     def rebuild():
         lista_col.controls.clear()
@@ -686,25 +688,58 @@ def _dlg_editar_pagos_orden(app, orden_id):
                 color=es.COLOR_TEXTO_SUAVE))
         else:
             for p in o["pagos"]:
-                lista_col.controls.append(_fila_pago_edit(
-                    app, p, metodos, rebuild))
-        if mounted(lista_col):
+                lista_col.controls.append(
+                    _fila_pago_edit(app, p, metodos, rebuild))
+        if o:
+            pagado = sum(float(x["monto_cup"] or 0)
+                         for x in o["pagos"])
+            pagado += sum(float(x["monto_cup"] or 0)
+                          for x in o["abonos"])
+            total = float(o["total"] or 0)
+            saldo = max(0.0, total - pagado)
+            vuelto = max(0.0, pagado - total)
+            resumen_lbl.value = (
+                f"Total orden: ${total:,.2f}   ·   "
+                f"Pagado: ${pagado:,.2f}   ·   "
+                f"Saldo: ${saldo:,.2f}"
+                + (f"   ·   Vuelto: ${vuelto:,.2f}"
+                   if vuelto > 0.01 else "")
+            )
+        try:
             lista_col.update()
+            resumen_lbl.update()
+        except Exception:
+            pass
+
+    def agregar(e):
+        _dlg_agregar_pago_orden(app, orden_id, metodos, rebuild)
 
     rebuild()
 
     page.show_dialog(ft.AlertDialog(
-        title=ft.Text("Editar métodos de pago"),
+        title=ft.Text("Editar pagos"),
         content=ft.Column([
-            ft.Text("Cambia el método de cada pago.",
-                    size=12, color=es.COLOR_TEXTO_SUAVE),
+            ft.Text(
+                "Solo puedes cambiar método y moneda. El monto se "
+                "recalcula automáticamente para no descuadrar la caja.",
+                size=12, color=es.COLOR_TEXTO_SUAVE),
             ft.Container(height=6),
             lista_col,
-        ], tight=True, width=400, spacing=8,
+            ft.Divider(height=1, color=es.COLOR_BORDE),
+            resumen_lbl,
+            ft.Container(height=6),
+            ft.FilledButton(
+                "Agregar pago", icon=ft.Icons.ADD,
+                on_click=agregar, width=10000, height=42,
+                style=es.estilo_boton_marca()),
+        ], tight=True, width=440, spacing=8,
             scroll=ft.ScrollMode.AUTO),
-        actions=[ft.FilledButton("Cerrar",
-                                 on_click=lambda e: page.pop_dialog(),
-                                 style=es.estilo_boton_marca())],
+        actions=[
+            ft.FilledButton(
+                "Cerrar",
+                on_click=lambda e: page.pop_dialog(),
+                style=es.estilo_boton_marca())
+        ],
         actions_alignment=ft.MainAxisAlignment.END,
     ))
 
@@ -712,39 +747,538 @@ def _dlg_editar_pagos_orden(app, orden_id):
 def _fila_pago_edit(app, p, metodos, on_refresh):
     page = app.page
 
-    def cambiar_metodo(e):
-        nuevo = dd.value
-        if not nuevo or nuevo == p["metodo"]:
+    def abrir_editor(e):
+        _dlg_editar_pago(app, p, metodos, on_refresh)
+
+    def eliminar(e):
+        _confirmar_eliminar_pago(app, p, on_refresh)
+
+    moneda = (p["moneda"] or "CUP").upper()
+    sub = f"{float(p['monto']):,.2f} {moneda}"
+    if moneda != "CUP":
+        sub += f"   =  ${float(p['monto_cup']):,.2f} CUP"
+
+    return ft.Container(
+        content=ft.Row([
+            ft.Column([
+                ft.Text(p["metodo"], size=13,
+                        color=es.COLOR_TEXTO,
+                        weight=ft.FontWeight.W_600),
+                ft.Text(sub, size=11, color=es.COLOR_TEXTO_SUAVE),
+            ], spacing=2, expand=True),
+            ft.IconButton(
+                ft.Icons.EDIT, icon_size=20,
+                icon_color=es.COLOR_ACENTO,
+                tooltip="Editar método/moneda",
+                on_click=abrir_editor),
+            ft.IconButton(
+                ft.Icons.DELETE_OUTLINE, icon_size=20,
+                icon_color=es.COLOR_PELIGRO,
+                tooltip="Eliminar pago",
+                on_click=eliminar),
+        ], spacing=4,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        padding=10, bgcolor=es.COLOR_SUPERFICIE_2,
+        border_radius=8)
+
+
+def _dlg_editar_pago(app, p, metodos, on_refresh):
+    """
+    Edita SOLO método y moneda de un pago ya registrado.
+    El monto NO es editable — se recalcula para preservar el
+    `monto_cup` original (la caja no se descuadra).
+
+    Usa CHIPS para método Y moneda porque el Dropdown de Flet
+    1.0.3 no propaga on_change de forma fiable.
+    """
+    from configuracion_negocio import (
+        moneda_efectiva_metodo, es_credito_metodo,
+    )
+    page = app.page
+
+    # Valor en CUP que NO cambia nunca
+    monto_cup = float(p["monto_cup"] or 0)
+
+    # Estado mutable del diálogo
+    estado = {
+        "metodo": p["metodo"],
+        "moneda": (p["moneda"] or "CUP").upper(),
+    }
+
+    # ── Chips de método ──
+    contenedor_metodos = ft.Row(spacing=6, wrap=True)
+    # ── Chips de moneda ──
+    contenedor_chips = ft.Row(spacing=6, wrap=True)
+    # ── Monto (read-only) ──
+    tf_monto = ft.TextField(
+        label="Monto (se recalcula automáticamente)",
+        value=f"{float(p['monto']):.2f}",
+        read_only=True,
+        **es.estilo_textfield(12), height=54)
+
+    lbl_info = ft.Text("", size=11, color=es.COLOR_TEXTO_SUAVE)
+    error_lbl = ft.Text("", color=es.COLOR_PELIGRO, size=12)
+
+    def _elegir_metodo(met):
+        if estado["metodo"] == met:
             return
+        estado["metodo"] = met
+        m_conf = next(
+            (m for m in metodos if m["clave"] == met), None)
+        if m_conf is None:
+            return
+        mf = moneda_efectiva_metodo(m_conf)
+        if mf:
+            estado["moneda"] = mf
+        _rebuild_metodos()
+        _rebuild_chips()
+        _refrescar_monto()
+        _rec_info()
+
+    def _elegir_moneda(m):
+        if estado["moneda"] == m:
+            return
+        estado["moneda"] = m
+        _rebuild_chips()
+        _refrescar_monto()
+        _rec_info()
+
+    def _rebuild_metodos():
+        contenedor_metodos.controls.clear()
+        for m in metodos:
+            activo = estado["metodo"] == m["clave"]
+            color = es.COLOR_ACENTO if activo else es.COLOR_SUPERFICIE
+            color_txt = ("#ffffff" if activo
+                         else es.COLOR_TEXTO_SUAVE)
+            contenedor_metodos.controls.append(ft.Container(
+                content=ft.Text(m["etiqueta"], size=12,
+                                color=color_txt,
+                                weight=ft.FontWeight.BOLD),
+                bgcolor=color,
+                border=ft.Border.all(
+                    1, es.COLOR_ACENTO if activo else es.COLOR_BORDE),
+                padding=ft.Padding.symmetric(horizontal=12,
+                                             vertical=8),
+                border_radius=20,
+                on_click=lambda e, c=m["clave"]: _elegir_metodo(c),
+                ink=True))
         try:
-            ven.cambiar_metodo_pago(p["id"], nuevo, app.usuario)
+            contenedor_metodos.update()
+        except Exception:
+            pass
+
+    def _rebuild_chips():
+        contenedor_chips.controls.clear()
+        m_conf = next(
+            (m for m in metodos if m["clave"] == estado["metodo"]),
+            None)
+        if m_conf is None:
+            try:
+                contenedor_chips.update()
+            except Exception:
+                pass
+            return
+
+        mon_fija = moneda_efectiva_metodo(m_conf)
+        es_credito = es_credito_metodo(m_conf)
+
+        if es_credito:
+            contenedor_chips.controls.append(ft.Container(
+                content=ft.Text("Crédito — sin moneda", size=12,
+                                color=es.COLOR_TEXTO_SUAVE),
+                padding=ft.Padding.symmetric(horizontal=12,
+                                             vertical=8),
+                bgcolor=es.COLOR_SUPERFICIE_2,
+                border_radius=20))
+            try:
+                contenedor_chips.update()
+            except Exception:
+                pass
+            return
+
+        opciones = (["CUP", "USD", "EUR"] if mon_fija is None
+                    else [mon_fija])
+        for op in opciones:
+            activo = estado["moneda"] == op
+            color = es.COLOR_ACENTO if activo else es.COLOR_SUPERFICIE
+            color_txt = ("#ffffff" if activo
+                         else es.COLOR_TEXTO_SUAVE)
+            contenedor_chips.controls.append(ft.Container(
+                content=ft.Text(op, size=12, color=color_txt,
+                                weight=ft.FontWeight.BOLD),
+                bgcolor=color,
+                border=ft.Border.all(
+                    1, es.COLOR_ACENTO if activo else es.COLOR_BORDE),
+                padding=ft.Padding.symmetric(horizontal=14,
+                                             vertical=8),
+                border_radius=20,
+                on_click=lambda e, m=op: _elegir_moneda(m),
+                ink=True))
+        try:
+            contenedor_chips.update()
+        except Exception:
+            pass
+
+    def _refrescar_monto():
+        m = estado["moneda"]
+        t = inv.get_tasa(m)
+        monto_num = (monto_cup / t) if t > 0 else 0.0
+        tf_monto.value = f"{monto_num:.2f}"
+        try:
+            tf_monto.update()
+        except Exception:
+            pass
+
+    def _rec_info():
+        m = estado["moneda"]
+        t = inv.get_tasa(m)
+        lbl_info.value = (
+            f"1 {m} = {t:.2f} CUP  ·  "
+            f"equivalente fijo: ${monto_cup:,.2f} CUP")
+        try:
+            lbl_info.update()
+        except Exception:
+            pass
+
+    # Arranque
+    _rebuild_metodos()
+    _rebuild_chips()
+    _refrescar_monto()
+    _rec_info()
+
+    def guardar(e):
+        error_lbl.value = ""
+        try:
+            ven.editar_pago(
+                pago_id=p["id"],
+                nuevo_metodo=estado["metodo"],
+                nueva_moneda=estado["moneda"],
+                usuario=app.usuario)
+        except Exception as ex:
+            error_lbl.value = str(ex)
+            page.update()
+            return
+        page.pop_dialog()
+        snack(page, "Pago actualizado", "ok")
+        on_refresh()
+
+    page.show_dialog(ft.AlertDialog(
+        title=ft.Text("Editar pago"),
+        content=ft.Column([
+            ft.Text("Método", size=11,
+                    color=es.COLOR_TEXTO_SUAVE),
+            contenedor_metodos,
+            ft.Container(height=4),
+            ft.Text("Moneda", size=11,
+                    color=es.COLOR_TEXTO_SUAVE),
+            contenedor_chips,
+            ft.Container(height=4),
+            tf_monto,
+            lbl_info, error_lbl,
+        ], tight=True, width=380, spacing=8,
+            scroll=ft.ScrollMode.AUTO),
+        actions=[
+            ft.TextButton("Cancelar",
+                          on_click=lambda e: page.pop_dialog()),
+            ft.FilledButton("Guardar", on_click=guardar,
+                            style=es.estilo_boton_marca()),
+        ],
+        actions_alignment=ft.MainAxisAlignment.END,
+    ))
+
+
+def _dlg_agregar_pago_orden(app, orden_id, metodos, on_refresh):
+    """
+    Agrega un pago nuevo a una orden existente.
+
+    - Chips para método y moneda (más fiable que Dropdown).
+    - Filtra los métodos ya usados en otros pagos (evita duplicar).
+    """
+    from configuracion_negocio import (
+        moneda_efectiva_metodo, es_credito_metodo,
+    )
+    page = app.page
+
+    o = ven.obtener_orden(orden_id)
+    if o is None:
+        snack(page, "Orden no encontrada", "error")
+        return
+
+    pagado = sum(float(x["monto_cup"] or 0) for x in o["pagos"])
+    pagado += sum(float(x["monto_cup"] or 0) for x in o["abonos"])
+    total = float(o["total"] or 0)
+    falta_cup = max(0.0, total - pagado)
+
+    if falta_cup <= 0.01:
+        snack(page, "Esta orden ya está completamente pagada", "info")
+        return
+
+    # Métodos ya usados en esta orden (para no duplicar)
+    ya_usados = {p["metodo"] for p in o["pagos"]}
+    metodos_disponibles = [
+        m for m in metodos if m["clave"] not in ya_usados]
+
+    if not metodos_disponibles:
+        snack(page, "Todos los métodos ya están usados en esta "
+                    "orden. Edita uno existente o elimínalo.",
+              "info")
+        return
+
+    # Estado mutable
+    estado = {
+        "metodo": metodos_disponibles[0]["clave"],
+        "moneda": "CUP",
+    }
+    m_conf_ini = metodos_disponibles[0]
+    mf_ini = moneda_efectiva_metodo(m_conf_ini)
+    if mf_ini:
+        estado["moneda"] = mf_ini
+
+    contenedor_metodos = ft.Row(spacing=6, wrap=True)
+    contenedor_chips = ft.Row(spacing=6, wrap=True)
+    tf_monto = ft.TextField(
+        label="Monto", value=f"{falta_cup:.2f}",
+        keyboard_type=ft.KeyboardType.NUMBER,
+        **es.estilo_textfield(12), height=54)
+    lbl_info = ft.Text("", size=11, color=es.COLOR_TEXTO_SUAVE)
+    error_lbl = ft.Text("", color=es.COLOR_PELIGRO, size=12)
+
+    def _leer_monto():
+        try:
+            return float((tf_monto.value or "0").replace(",", "."))
+        except ValueError:
+            return 0.0
+
+    def _elegir_metodo(met):
+        if estado["metodo"] == met:
+            return
+        estado["metodo"] = met
+        m_conf = next(
+            (m for m in metodos_disponibles if m["clave"] == met),
+            None)
+        if m_conf is None:
+            return
+        mf = moneda_efectiva_metodo(m_conf)
+        if mf and estado["moneda"] != mf:
+            _convertir_moneda(mf)
+        _rebuild_metodos()
+        _rebuild_chips()
+        _rec_info()
+
+    def _elegir_moneda(m):
+        if estado["moneda"] == m:
+            return
+        _convertir_moneda(m)
+        _rebuild_chips()
+        _rec_info()
+
+    def _convertir_moneda(m):
+        v_antes = _leer_monto()
+        m_antes = estado["moneda"]
+        t_antes = inv.get_tasa(m_antes)
+        t_nueva = inv.get_tasa(m)
+        if t_antes > 0 and t_nueva > 0 and m_antes != m:
+            v_nueva = round(v_antes * t_antes / t_nueva, 2)
+            tf_monto.value = f"{v_nueva:.2f}"
+            try:
+                tf_monto.update()
+            except Exception:
+                pass
+        estado["moneda"] = m
+
+    def _rebuild_metodos():
+        contenedor_metodos.controls.clear()
+        for m in metodos_disponibles:
+            activo = estado["metodo"] == m["clave"]
+            color = es.COLOR_ACENTO if activo else es.COLOR_SUPERFICIE
+            color_txt = ("#ffffff" if activo
+                         else es.COLOR_TEXTO_SUAVE)
+            contenedor_metodos.controls.append(ft.Container(
+                content=ft.Text(m["etiqueta"], size=12,
+                                color=color_txt,
+                                weight=ft.FontWeight.BOLD),
+                bgcolor=color,
+                border=ft.Border.all(
+                    1, es.COLOR_ACENTO if activo else es.COLOR_BORDE),
+                padding=ft.Padding.symmetric(horizontal=12,
+                                             vertical=8),
+                border_radius=20,
+                on_click=lambda e, c=m["clave"]: _elegir_metodo(c),
+                ink=True))
+        try:
+            contenedor_metodos.update()
+        except Exception:
+            pass
+
+    def _rebuild_chips():
+        contenedor_chips.controls.clear()
+        m_conf = next(
+            (m for m in metodos_disponibles
+             if m["clave"] == estado["metodo"]),
+            None)
+        if m_conf is None:
+            try:
+                contenedor_chips.update()
+            except Exception:
+                pass
+            return
+
+        mon_fija = moneda_efectiva_metodo(m_conf)
+        es_credito = es_credito_metodo(m_conf)
+
+        if es_credito:
+            contenedor_chips.controls.append(ft.Container(
+                content=ft.Text("Crédito — sin moneda", size=12,
+                                color=es.COLOR_TEXTO_SUAVE),
+                padding=ft.Padding.symmetric(horizontal=12,
+                                             vertical=8),
+                bgcolor=es.COLOR_SUPERFICIE_2,
+                border_radius=20))
+            try:
+                contenedor_chips.update()
+            except Exception:
+                pass
+            return
+
+        opciones = (["CUP", "USD", "EUR"] if mon_fija is None
+                    else [mon_fija])
+        for op in opciones:
+            activo = estado["moneda"] == op
+            color = es.COLOR_ACENTO if activo else es.COLOR_SUPERFICIE
+            color_txt = ("#ffffff" if activo
+                         else es.COLOR_TEXTO_SUAVE)
+            contenedor_chips.controls.append(ft.Container(
+                content=ft.Text(op, size=12, color=color_txt,
+                                weight=ft.FontWeight.BOLD),
+                bgcolor=color,
+                border=ft.Border.all(
+                    1, es.COLOR_ACENTO if activo else es.COLOR_BORDE),
+                padding=ft.Padding.symmetric(horizontal=14,
+                                             vertical=8),
+                border_radius=20,
+                on_click=lambda e, m=op: _elegir_moneda(m),
+                ink=True))
+        try:
+            contenedor_chips.update()
+        except Exception:
+            pass
+
+    def _rec_info():
+        m = estado["moneda"]
+        t = inv.get_tasa(m)
+        v = _leer_monto()
+        lbl_info.value = (
+            f"1 {m} = {t:.2f} CUP  ·  "
+            f"equivalente: ${v * t:,.2f} CUP  ·  "
+            f"falta: ${falta_cup:,.2f} CUP")
+        try:
+            lbl_info.update()
+        except Exception:
+            pass
+
+    tf_monto.on_change = lambda e: _rec_info()
+
+    # Arranque
+    _rebuild_metodos()
+    _rebuild_chips()
+    _rec_info()
+
+    def guardar(e):
+        error_lbl.value = ""
+        m_conf = next(
+            (m for m in metodos_disponibles
+             if m["clave"] == estado["metodo"]),
+            None)
+        if m_conf is None:
+            error_lbl.value = "Selecciona un método"
+            page.update()
+            return
+        if es_credito_metodo(m_conf):
+            monto = falta_cup
+            moneda = "CUP"
+        else:
+            mf = moneda_efectiva_metodo(m_conf)
+            moneda = mf or estado["moneda"]
+            monto = _leer_monto()
+            if monto <= 0:
+                error_lbl.value = "El monto debe ser mayor que 0"
+                page.update()
+                return
+        try:
+            ven.agregar_pago_a_orden(
+                orden_id=orden_id,
+                metodo=m_conf["clave"],
+                moneda=moneda,
+                monto=monto,
+                usuario=app.usuario)
+        except Exception as ex:
+            error_lbl.value = str(ex)
+            page.update()
+            return
+        page.pop_dialog()
+        snack(page, "Pago agregado", "ok")
+        on_refresh()
+
+    page.show_dialog(ft.AlertDialog(
+        title=ft.Text("Agregar pago"),
+        content=ft.Column([
+            ft.Text(f"Falta por pagar: ${falta_cup:,.2f} CUP",
+                    size=12, color=es.COLOR_TEXTO_SUAVE),
+            ft.Container(height=4),
+            ft.Text("Método", size=11,
+                    color=es.COLOR_TEXTO_SUAVE),
+            contenedor_metodos,
+            ft.Container(height=4),
+            ft.Text("Moneda", size=11,
+                    color=es.COLOR_TEXTO_SUAVE),
+            contenedor_chips,
+            ft.Container(height=4),
+            tf_monto,
+            lbl_info, error_lbl,
+        ], tight=True, width=380, spacing=8,
+            scroll=ft.ScrollMode.AUTO),
+        actions=[
+            ft.TextButton("Cancelar",
+                          on_click=lambda e: page.pop_dialog()),
+            ft.FilledButton("Agregar", on_click=guardar,
+                            style=es.estilo_boton_marca()),
+        ],
+        actions_alignment=ft.MainAxisAlignment.END,
+    ))
+
+
+def _confirmar_eliminar_pago(app, p, on_refresh):
+    page = app.page
+
+    def hacer(e):
+        try:
+            ven.eliminar_pago(p["id"], app.usuario)
         except Exception as ex:
             snack(page, str(ex), "error")
             return
-        snack(page, "Método actualizado", "ok")
+        page.pop_dialog()
+        snack(page, "Pago eliminado", "ok")
         on_refresh()
 
-    dd = ft.Dropdown(
-        value=p["metodo"],
-        options=[ft.DropdownOption(key=m["clave"], text=m["etiqueta"])
-                 for m in metodos],
-        on_change=cambiar_metodo,
-        dense=True, **es.borde_textfield(10))
+    page.show_dialog(ft.AlertDialog(
+        title=ft.Text("Eliminar pago"),
+        content=ft.Text(
+            f"¿Eliminar el pago de "
+            f"{float(p['monto']):,.2f} {p['moneda']} "
+            f"con {p['metodo']}?\n\n"
+            "El saldo pendiente de la orden se recalculará.",
+            size=13, color=es.COLOR_TEXTO),
+        actions=[
+            ft.TextButton("Cancelar",
+                          on_click=lambda e: page.pop_dialog()),
+            ft.FilledButton("Eliminar", on_click=hacer,
+                            style=ft.ButtonStyle(
+                                bgcolor=es.COLOR_PELIGRO,
+                                color="white")),
+        ],
+        actions_alignment=ft.MainAxisAlignment.END,
+    ))
 
-    return ft.Container(
-        content=ft.Column([
-            ft.Row([
-                ft.Text(f"{p['monto']:.2f} {p['moneda']}",
-                        size=13, color=es.COLOR_TEXTO,
-                        weight=ft.FontWeight.BOLD),
-                ft.Text(f"= ${p['monto_cup']:,.2f} CUP",
-                        size=11, color=es.COLOR_TEXTO_SUAVE,
-                        expand=True),
-            ], spacing=8),
-            dd,
-        ], spacing=4),
-        padding=10, bgcolor=es.COLOR_SUPERFICIE_2,
-        border_radius=8)
 
 def _fila_item_editable(app, idx, it, items_state, rebuild, total_lbl):
     """Fila editable: producto + cantidad + botón quitar."""
@@ -764,7 +1298,6 @@ def _fila_item_editable(app, idx, it, items_state, rebuild, total_lbl):
         except ValueError:
             v = 1
         items_state[idx]["cantidad"] = v
-        # Recalcular total en el label
         try:
             sub = sum(
                 (x["precio_unitario"] - x["rebaja"]) * x["cantidad"]
@@ -793,14 +1326,12 @@ def _fila_item_editable(app, idx, it, items_state, rebuild, total_lbl):
             ], spacing=2, expand=True),
             tf_cant,
             ft.IconButton(ft.Icons.CLOSE, icon_size=18,
-                          icon_color=es.COLOR_PELIGRO,
-                          tooltip="Quitar ítem",
-                          on_click=quitar),
+                        icon_color=es.COLOR_PELIGRO,
+                        tooltip="Quitar ítem",
+                        on_click=quitar),
         ], spacing=8,
             vertical_alignment=ft.CrossAxisAlignment.CENTER),
         padding=10,
         bgcolor=es.COLOR_SUPERFICIE_2,
         border_radius=10,
-    ) 
-
-
+    )

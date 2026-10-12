@@ -3,6 +3,12 @@ Configuración del negocio (para tickets) + métodos de pago.
 """
 from db import get_conn
 
+_MONEDA_FIJA_FALLBACK = {
+    "Transfermóvil": "CUP",
+    "EnZona":        "CUP",
+    "Zelle":         "USD",
+    "Efectivo MLC":  "USD",
+}
 
 CAMPOS_NEGOCIO = (
     ("nombre",   "Nombre comercial",             ""),
@@ -119,3 +125,20 @@ def crear_metodo_pago(clave, etiqueta, activo=0, orden=99,
 def eliminar_metodo_pago(clave: str) -> None:
     with get_conn() as conn:
         conn.execute("DELETE FROM metodos_pago WHERE clave=?", (clave,))
+        
+def moneda_efectiva_metodo(metodo_conf) -> str | None:
+    """Devuelve la moneda fija del método, o None si es libre."""
+    if not metodo_conf:
+        return None
+    if metodo_conf.get("es_credito"):
+        return None
+    mf = metodo_conf.get("moneda_fija")
+    if mf:
+        return mf
+    clave = metodo_conf.get("clave")
+    return _MONEDA_FIJA_FALLBACK.get(clave)
+
+
+def es_credito_metodo(metodo_conf) -> bool:
+    return bool(metodo_conf and metodo_conf.get("es_credito"))
+

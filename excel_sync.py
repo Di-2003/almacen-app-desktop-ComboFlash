@@ -1,46 +1,17 @@
 """
-Excel sync v4.4 — Almacén Combos Flash.
+Excel sync — Almacén Combos Flash.
 
-FIXES v3 → v4:
-  #1  Ventas (histórico + diario): excluir Fondo CUP/USD.
-  #2  Ventas histórico: TOTAL DEL PERÍODO incluye Cantidad total.
-  #3  Movs histórico: "Merma" solo BAJA y SALIDA con motivo Merma.
-  #4  Salidas: "Error" ya no se clasifica como Merma.
-  #5  Salidas: total mermas refleja solo mermas reales.
-  #6  Diario: distinguir visualmente BAJA Error vs Merma.
-  #7  Movs histórico: TOTAL DEL DÍA incluye cantidad total.
+Genera 3 tipos de Excel:
+  - generar_excel_bytes()          → inventario completo multi-hoja
+  - generar_excel_diario()         → movimientos del día (1 hoja/local)
+  - generar_excel_salidas_hoy()    → 3 tablas lado a lado por local
 
-FIXES v4 → v4.1:
-  #11 Movs histórico: excluir Fondos del total de ventas.
-  #12 Salidas: excluir Fondos del listado VENTAS.
-  #13 Salidas: OTRAS incluye TODO lo que no sea ENTRADA ni venta.
-  #14 Movs histórico: Precio U. vacío cuando es 0.
-  #15 Movs histórico: pintar en rojo TODA merma (SALIDA o BAJA).
-  #16 _es_merma solo acepta BAJA/SALIDA.
-
-FIXES v4.1 → v4.2:
-  #17 Excluir movs de órdenes anuladas en todas las consultas.
-  #18 Salidas: barras de título con fondo fuerte (texto blanco).
-  #19 Tabla "Fondos CUP/USD" con saldo acumulado.
-
-FIXES v4.2 → v4.3:
-  #20 Quitar tabla de fondos redundante:
-      - _hoja_productos_local  (duplicaba Movs_Almacén)
-      - _hoja_ventas_local     (duplicaba Movs_Almacén)
-      - _hoja_ventas_dia_local (duplicaba diario.Resumen)
-      Se mantiene solo en:
-      - inventario.Resumen     (consolidado histórico)
-      - inventario.Movs_{Local} (histórico por local)
-      - diario.Resumen         (día, todos los locales)
-
-FIXES v4.3 → v4.4:
-  #21 auto_filter con rango explícito (antes usaba `fila - 3`
-      que quedaba desfasado al añadir la tabla de fondos):
-      - inventario.Resumen        → A3:F{total_resumen}
-      - inventario.Movs_{Local}   → A3:I{total_periodo}
-      - diario.Resumen            → A3:J{total_general}
-      Ahora el filtro cubre header + datos + total, sin
-      arrastrar filas en blanco ni la tabla de fondos.
+Reglas de negocio:
+  - "Venta" = SALIDA con motivo 'combos' o 'venta' (case-insensitive)
+  - Fondo CUP/USD: productos cuyo nombre empieza con "fondo" — se
+    excluyen del cálculo de ventas y se muestran aparte.
+  - Órdenes anuladas: sus movimientos no aparecen.
+  - Merma: solo BAJA, o SALIDA con motivo 'merma'. 'error' NO es merma.
 """
 import io
 from datetime import datetime
@@ -67,13 +38,10 @@ COLOR_SALIDA_BG  = "FFFFF3E0"
 COLOR_MERMA_BG   = "FFFFEBEE"
 COLOR_ALERTA_BG  = "FFFFF59D"
 
-# FIX #18: colores fuertes para las barras de título de _hoja_3_tablas
-COLOR_TITULO_ENTRADA = "FF0284C7"   # azul fuerte
-COLOR_TITULO_VENTAS  = "FFD97706"   # ámbar fuerte
-COLOR_TITULO_OTRAS   = "FFDC2626"   # rojo fuerte
-
-# FIX #19: color de la cabecera de la tabla de fondos
-COLOR_TITULO_FONDOS  = "FF0F766E"   # teal fuerte
+COLOR_TITULO_ENTRADA = "FF0284C7"
+COLOR_TITULO_VENTAS  = "FFD97706"
+COLOR_TITULO_OTRAS   = "FFDC2626"
+COLOR_TITULO_FONDOS  = "FF0F766E"
 
 BORDE_FINO = Border(
     left=Side(style="thin", color="FFB0BEC5"),
@@ -300,19 +268,11 @@ def _cargar_movs_fondos(local_id=None, desde=None, hasta=None) -> list[dict]:
 
 
 # ══════════════════════════════════════════════════════════
-# TABLA DE FONDOS (solo se usa donde NO es redundante)
+# TABLA DE FONDOS
 # ══════════════════════════════════════════════════════════
 def _escribir_tabla_fondos(ws, fila_ini, movs, titulo,
                             col_ini=1, col_fin=7,
                             etiqueta_saldo="Saldo"):
-    """
-    Escribe una tabla con:
-      Fecha | Fondo | Tipo | Cantidad | Motivo | Usuario | <etiqueta_saldo>
-    `etiqueta_saldo` permite poner "Neto del día" para tablas diarias
-    en vez de "Saldo" (que en tablas diarias puede confundir).
-    Devuelve la fila siguiente tras la tabla.
-    """
-    # Barra de título
     c = ws.cell(row=fila_ini, column=col_ini, value=titulo)
     c.font = _FONT_HEADER
     ws.merge_cells(start_row=fila_ini, start_column=col_ini,
@@ -325,7 +285,6 @@ def _escribir_tabla_fondos(ws, fila_ini, movs, titulo,
     ws.row_dimensions[fila_ini].height = 22
     fila = fila_ini + 1
 
-    # Encabezados
     encabezados = ["Fecha", "Fondo", "Tipo", "Cantidad",
                    "Motivo", "Usuario", etiqueta_saldo]
     for i, txt in enumerate(encabezados):
@@ -373,7 +332,6 @@ def _escribir_tabla_fondos(ws, fila_ini, movs, titulo,
                 cc.alignment = _ALIGN_LEFT
         fila += 1
 
-    # Fila resumen por fondo
     fila += 1
     for fondo, saldo in sorted(saldos.items()):
         cc = ws.cell(row=fila, column=col_ini,
@@ -393,8 +351,21 @@ def _escribir_tabla_fondos(ws, fila_ini, movs, titulo,
 
 
 # ══════════════════════════════════════════════════════════
-# HOJA: RESUMEN DEL INVENTARIO
+# HOJAS DEL EXCEL COMPLETO
 # ══════════════════════════════════════════════════════════
+def _hoja_fondos(ws):
+    _titulo_hoja(ws, 7,
+                 f"Fondos CUP/USD — Histórico consolidado — "
+                 f"{datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    movs_fondos = _cargar_movs_fondos(local_id=None)
+    _escribir_tabla_fondos(
+        ws, 3, movs_fondos,
+        "FONDOS CUP/USD — Histórico consolidado",
+        col_ini=1, col_fin=7, etiqueta_saldo="Saldo")
+    _anchos(ws, [20, 14, 12, 14, 24, 14, 16])
+    ws.freeze_panes = "A4"
+
+
 def _hoja_resumen_inventario(ws, locales):
     _titulo_hoja(ws, 6,
                  f"Resumen del inventario — "
@@ -444,27 +415,11 @@ def _hoja_resumen_inventario(ws, locales):
         6: (tot_prod, None),
     }, col_ini=1, col_fin=6, fill=_FILL_TOTAL)
 
-    # FIX #21: guardo la fila del total ANTES de escribir la tabla de
-    # fondos, para que el auto_filter apunte al rango correcto.
-    fila_total_resumen = fila
-
-    # Tabla de fondos consolidada (único sitio histórico global)
-    fila += 2
-    movs_fondos = _cargar_movs_fondos(local_id=None)
-    _escribir_tabla_fondos(
-        ws, fila, movs_fondos,
-        "FONDOS CUP/USD — Histórico consolidado",
-        col_ini=1, col_fin=7, etiqueta_saldo="Saldo")
-
     _anchos(ws, [26, 16, 20, 16, 12, 12, 16])
     ws.freeze_panes = f"A{FILA_HEADER + 1}"
-    # FIX #21: rango explícito, cubre header + data + TOTAL.
-    ws.auto_filter.ref = f"A{FILA_HEADER}:F{fila_total_resumen}"
+    ws.auto_filter.ref = f"A{FILA_HEADER}:F{fila}"
 
 
-# ══════════════════════════════════════════════════════════
-# HOJA: PRODUCTOS DEL LOCAL
-# ══════════════════════════════════════════════════════════
 def _hoja_productos_local(ws, local, productos):
     _titulo_hoja(ws, 10,
                  f"{local['nombre']} — "
@@ -534,15 +489,11 @@ def _hoja_productos_local(ws, local, productos):
     ws.merge_cells("A2:J2")
     ws.row_dimensions[2].height = 20
 
-    # FIX #20: sin tabla de fondos (redundante con Movs_Almacén)
     _anchos(ws, [14, 32, 10, 12, 14, 16, 14, 14, 14, 10])
     ws.freeze_panes = f"A{FILA_HEADER + 1}"
     ws.auto_filter.ref = f"A{FILA_HEADER}:J{fila}"
 
 
-# ══════════════════════════════════════════════════════════
-# HOJA: MOVS HISTÓRICOS DEL LOCAL
-# ══════════════════════════════════════════════════════════
 def _hoja_movs_local(ws, local, movs):
     _titulo_hoja(ws, 9, f"Movimientos — {local['nombre']} (Histórico)")
     FILA_HEADER = 3
@@ -648,10 +599,8 @@ def _hoja_movs_local(ws, local, movs):
         },
         col_ini=1, col_fin=9, fill=_FILL_TOTAL)
 
-    # FIX #21: guardo la fila del TOTAL DEL PERÍODO antes de los fondos
     fila_total_periodo = fila
 
-    # Tabla de fondos del local (único sitio histórico por local)
     fila += 2
     movs_fondos = _cargar_movs_fondos(local_id=local["id"])
     _escribir_tabla_fondos(
@@ -661,14 +610,9 @@ def _hoja_movs_local(ws, local, movs):
 
     _anchos(ws, [14, 12, 32, 10, 14, 12, 14, 18, 20])
     ws.freeze_panes = f"A{FILA_HEADER + 1}"
-    # FIX #21: filtro solo hasta el TOTAL DEL PERÍODO, sin arrastrar
-    # filas en blanco ni la tabla de fondos.
     ws.auto_filter.ref = f"A{FILA_HEADER}:I{fila_total_periodo}"
 
 
-# ══════════════════════════════════════════════════════════
-# HOJA: VENTAS HISTÓRICAS DEL LOCAL
-# ══════════════════════════════════════════════════════════
 def _hoja_ventas_local(ws, local, movs):
     _titulo_hoja(ws, 7, f"Ventas — {local['nombre']} (Combos)")
     FILA_HEADER = 3
@@ -745,7 +689,6 @@ def _hoja_ventas_local(ws, local, movs):
         },
         col_ini=1, col_fin=7, fill=_FILL_TOTAL)
 
-    # FIX #20: sin tabla de fondos (redundante con Movs_Almacén)
     _anchos(ws, [12, 32, 10, 12, 10, 14, 20])
     ws.freeze_panes = f"A{FILA_HEADER + 1}"
     ws.auto_filter.ref = f"A{FILA_HEADER}:G{fila}"
@@ -762,6 +705,9 @@ def generar_excel_bytes() -> bytes:
     ws_res = wb.active
     ws_res.title = _sanitizar("Resumen", usados)
     _hoja_resumen_inventario(ws_res, locales_activos)
+
+    ws_fond = wb.create_sheet(_sanitizar("Fondos", usados))
+    _hoja_fondos(ws_fond)
 
     for local in locales_activos:
         ws_p = wb.create_sheet(_sanitizar(local["nombre"], usados))
@@ -836,7 +782,7 @@ def _hoja_movs_dia_general(ws, hoy):
                     value="Sin movimientos registrados hoy.")
         c.font = _FONT_ITALIC_GREY
         ws.merge_cells(start_row=fila, start_column=1,
-                    end_row=fila, end_column=10)
+                       end_row=fila, end_column=10)
         _anchos(ws, [10, 16, 12, 12, 30, 10, 12, 12, 14, 22])
         return
 
@@ -936,10 +882,8 @@ def _hoja_movs_dia_general(ws, hoy):
         10: (f"Merma: ${_r2(tot_merma_g):,.2f}", None),
     }, col_ini=1, col_fin=10, fill=_FILL_TOTAL)
 
-    # FIX #21: guardo la fila del TOTAL GENERAL antes de los fondos
     fila_total_general = fila
 
-    # Tabla de fondos del día (único sitio diario, todos los locales)
     fila += 2
     movs_fondos = _cargar_movs_fondos(
         local_id=None, desde=hoy + " 00:00:00",
@@ -951,8 +895,6 @@ def _hoja_movs_dia_general(ws, hoy):
 
     _anchos(ws, [10, 16, 12, 12, 30, 10, 12, 12, 14, 22])
     ws.freeze_panes = f"A{FILA_HEADER + 1}"
-    # FIX #21: filtro solo hasta el TOTAL GENERAL, sin arrastrar
-    # filas en blanco ni la tabla de fondos.
     ws.auto_filter.ref = f"A{FILA_HEADER}:J{fila_total_general}"
 
 
@@ -1026,7 +968,6 @@ def _hoja_ventas_dia_local(ws, local, hoy):
         },
         col_ini=1, col_fin=7, fill=_FILL_TOTAL)
 
-    # FIX #20: sin tabla de fondos (redundante con diario.Resumen)
     _anchos(ws, [12, 32, 10, 12, 10, 14, 10])
     ws.freeze_panes = f"A{FILA_HEADER + 1}"
     ws.auto_filter.ref = f"A{FILA_HEADER}:G{fila}"

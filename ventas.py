@@ -38,7 +38,6 @@ def agregar_item(carrito, producto, cantidad=1) -> None:
 
     stock_disponible = float(producto.get("stock") or 0)
 
-    # Si ya está en el carrito, sumar
     for it in carrito["items"]:
         if it["producto_id"] == producto["id"]:
             nueva = float(it["cantidad"]) + cantidad
@@ -49,7 +48,6 @@ def agregar_item(carrito, producto, cantidad=1) -> None:
             it["cantidad"] = nueva
             return
 
-    # Nuevo ítem
     if cantidad > stock_disponible + 0.001:
         raise ValueError(
             f"Solo hay {inv.fmt_cantidad(stock_disponible)} "
@@ -71,8 +69,7 @@ def eliminar_item(carrito, indice) -> None:
 
 
 def editar_item(carrito, indice, cantidad=None, rebaja=None) -> None:
-    """Edita cantidad y/o rebaja de un ítem del carrito.
-    Valida stock contra la BD antes de aceptar la nueva cantidad."""
+    """Edita cantidad y/o rebaja de un ítem del carrito."""
     if not (0 <= indice < len(carrito["items"])):
         return
     it = carrito["items"][indice]
@@ -167,7 +164,6 @@ def registrar_venta(carrito, pagos, usuario, local_id,
     if total_cup <= 0:
         raise ValueError("El total debe ser mayor que 0")
 
-    # Validar stock (por si acaso cambió desde que se agregó al carrito)
     with get_conn() as conn:
         for it in carrito["items"]:
             p = conn.execute(
@@ -183,15 +179,15 @@ def registrar_venta(carrito, pagos, usuario, local_id,
                     f"solicitado {inv.fmt_cantidad(it['cantidad'])}"
                 )
 
-    # Cliente
     cliente_id = carrito.get("cliente_id")
     if cliente_id:
         c = obtener_cliente(cliente_id)
         if c is None or not c["activo"]:
             raise ValueError("Cliente no encontrado o inactivo")
 
-    # Procesar pagos
-    from configuracion_negocio import obtener_metodo_pago
+    from configuracion_negocio import (
+        obtener_metodo_pago, moneda_efectiva_metodo,
+    )
     total_pagado_cup = 0.0
     pagos_proc = []
     hay_fiado = False
@@ -203,7 +199,11 @@ def registrar_venta(carrito, pagos, usuario, local_id,
         m_conf = obtener_metodo_pago(metodo)
         if m_conf is None or not m_conf["activo"]:
             raise ValueError(f"Método de pago inválido: «{metodo}»")
+        # Si el método fuerza moneda, prevalece sobre lo que venga
+        mf = moneda_efectiva_metodo(m_conf)
         moneda = (p.get("moneda") or "CUP").upper()
+        if mf:
+            moneda = mf
         if moneda not in MONEDAS_VALIDAS:
             moneda = "CUP"
         try:
@@ -239,7 +239,6 @@ def registrar_venta(carrito, pagos, usuario, local_id,
         raise ValueError(
             "Una venta con «Fiado» requiere un cliente asociado")
 
-    # Estado y saldo
     if hay_fiado:
         saldo_pendiente = max(0.0, total_cup - pagos_no_fiado_cup)
         if saldo_pendiente <= 0.01:
@@ -252,7 +251,6 @@ def registrar_venta(carrito, pagos, usuario, local_id,
         saldo_pendiente = 0.0
         estado = "pagada"
 
-    # Descuentos por ítem (proporcional)
     descuentos_item = _distribuir_descuento(carrito, totales["descuento"])
     numero_ticket = _siguiente_ticket()
 
@@ -397,7 +395,12 @@ def listar_ordenes(local_id=None, desde=None, hasta=None,
 
 
 def anular_orden(orden_id, usuario) -> None:
-    """Anula una orden completa: restaura stock, marca como anulada."""
+    """Anula una orden completa: restaura stock, marca como anulada.
+
+    Solo repone la cantidad PENDIENTE de cada ítem (la que no fue
+    devuelta previamente por la tabla `devoluciones`). Si un ítem ya
+    fue devuelto total o parcialmente, no se vuelve a sumar al stock.
+    """
     username = _username(usuario)
     with get_conn() as conn:
         o = conn.execute(
@@ -414,16 +417,24 @@ def anular_orden(orden_id, usuario) -> None:
         for it in items:
             if it["producto_id"] is None:
                 continue
+            ya_devuelto = conn.execute(
+                "SELECT COALESCE(SUM(cantidad),0) AS c "
+                "FROM devoluciones WHERE item_id=?",
+                (it["id"],)
+            ).fetchone()["c"]
+            pendiente = float(it["cantidad"] or 0) - float(ya_devuelto or 0)
+            if pendiente <= 0.001:
+                continue
             conn.execute(
                 "UPDATE productos SET stock=stock+?, fecha_ultima_mod=? "
                 "WHERE id=?",
-                (it["cantidad"], fecha, it["producto_id"])
+                (pendiente, fecha, it["producto_id"])
             )
             conn.execute(
                 "INSERT INTO movimientos(local_id,producto_id,tipo,"
                 "cantidad,motivo,detalle,fecha,usuario) "
                 "VALUES(?,?,'ENTRADA',?,?,?,?,?)",
-                (o["local_id"], it["producto_id"], it["cantidad"],
+                (o["local_id"], it["producto_id"], pendiente,
                  "Anulación", f"Ticket {o['numero_ticket']}",
                  fecha, username)
             )
@@ -451,11 +462,10 @@ def totales_periodo(local_id, desde, hasta) -> dict:
         ).fetchone()
     return {"n": int(row["n"] or 0), "total": float(row["total"] or 0)}
 
+
 def editar_items_orden(orden_id, items_nuevos, usuario, fecha=None):
     """
     Reemplaza los items de una orden existente.
-    items_nuevos: [{"producto_id", "nombre", "codigo", "cantidad",
-                    "precio_unitario", "rebaja"}]
     Recalcula total, saldo y stock. Mantiene pagos y abonos ya hechos.
     """
     username = _username(usuario)
@@ -474,7 +484,6 @@ def editar_items_orden(orden_id, items_nuevos, usuario, fecha=None):
         if o["estado"] == "devuelta":
             raise ValueError("No se puede editar una orden devuelta")
 
-        # 1. Revertir stock de items viejos
         old_items = conn.execute(
             "SELECT * FROM orden_items WHERE orden_id=?", (orden_id,)
         ).fetchall()
@@ -485,7 +494,6 @@ def editar_items_orden(orden_id, items_nuevos, usuario, fecha=None):
                     "fecha_ultima_mod=? WHERE id=?",
                     (it["cantidad"], fecha, it["producto_id"]))
 
-        # 2. Borrar movimientos de la venta y items viejos
         conn.execute(
             "DELETE FROM movimientos WHERE tipo='SALIDA' "
             "AND motivo='Venta' AND detalle=?",
@@ -493,7 +501,6 @@ def editar_items_orden(orden_id, items_nuevos, usuario, fecha=None):
         conn.execute(
             "DELETE FROM orden_items WHERE orden_id=?", (orden_id,))
 
-        # 3. Validar stock y calcular subtotal nuevo
         subtotal = 0.0
         for it in items_nuevos:
             p = conn.execute(
@@ -511,7 +518,6 @@ def editar_items_orden(orden_id, items_nuevos, usuario, fecha=None):
                    - float(it["rebaja"])) * float(it["cantidad"])
             subtotal += sub
 
-        # Preservar el % de descuento global de la orden original
         desc_pct = 0.0
         if float(o["subtotal"] or 0) > 0:
             desc_pct = (float(o["descuento_global"] or 0)
@@ -519,7 +525,6 @@ def editar_items_orden(orden_id, items_nuevos, usuario, fecha=None):
         descuento_total = subtotal * (desc_pct / 100.0)
         total_nuevo = round(subtotal - descuento_total, 2)
 
-        # 4. Recalcular pagado real y saldo
         pagos_sum = conn.execute(
             "SELECT COALESCE(SUM(monto_cup),0) AS t FROM pagos "
             "WHERE orden_id=?", (orden_id,)
@@ -540,7 +545,6 @@ def editar_items_orden(orden_id, items_nuevos, usuario, fecha=None):
             nuevo_saldo = total_nuevo
             nuevo_estado = "pendiente"
 
-        # 5. Crear items nuevos + ajustar stock + movimientos
         total_subs_base = sum(
             (float(it["precio_unitario"]) - float(it["rebaja"]))
             * float(it["cantidad"]) for it in items_nuevos)
@@ -589,7 +593,6 @@ def editar_items_orden(orden_id, items_nuevos, usuario, fecha=None):
                  rebaja_final, float(it["precio_unitario"]),
                  float(p["precio_costo"] or 0), fecha, username))
 
-        # 6. Actualizar cabecera
         conn.execute(
             "UPDATE ordenes_venta SET subtotal=?, descuento_global=?, "
             "total=?, saldo_pendiente=?, estado=? WHERE id=?",
@@ -602,13 +605,28 @@ def editar_items_orden(orden_id, items_nuevos, usuario, fecha=None):
         "estado": nuevo_estado,
         "saldo_pendiente": nuevo_saldo,
     }
-    
-def cambiar_metodo_pago(pago_id, nuevo_metodo, usuario):
-    """Cambia el método de un pago individual. Mantiene monto y moneda."""
-    from configuracion_negocio import obtener_metodo_pago
+
+
+# ═══════════════════════════════════════════════════════════
+# EDITAR / AGREGAR / ELIMINAR PAGOS
+# ═══════════════════════════════════════════════════════════
+
+def editar_pago(pago_id, nuevo_metodo, nueva_moneda=None,
+                usuario=None):
+    """
+    Edita un pago existente: SOLO método y moneda.
+
+    ❌ NO se puede cambiar el monto manualmente.
+    ✅ El monto se recalcula para preservar el `monto_cup` original.
+    ✅ La caja del turno NO se descuadra nunca.
+    """
+    from configuracion_negocio import (
+        obtener_metodo_pago, moneda_efectiva_metodo,
+    )
     m = obtener_metodo_pago(nuevo_metodo)
     if m is None or not m["activo"]:
         raise ValueError(f"Método de pago inválido: «{nuevo_metodo}»")
+
     with get_conn() as conn:
         p = conn.execute(
             "SELECT * FROM pagos WHERE id=?", (pago_id,)
@@ -622,7 +640,169 @@ def cambiar_metodo_pago(pago_id, nuevo_metodo, usuario):
             raise ValueError("Orden no encontrada")
         if o["estado"] == "anulada":
             raise ValueError("No se puede editar una orden anulada")
+
+        # monto_cup original: es sagrado, no se toca
+        monto_cup_actual = float(p["monto_cup"] or 0)
+
+        # Moneda destino
+        moneda_fija = moneda_efectiva_metodo(m)
+        if moneda_fija:
+            moneda = moneda_fija
+        elif nueva_moneda:
+            moneda = (nueva_moneda or "CUP").upper()
+            if moneda not in MONEDAS_VALIDAS:
+                moneda = "CUP"
+        else:
+            moneda = (p["moneda"] or "CUP").upper()
+
+        # Recalcular monto para que monto × tasa = monto_cup_actual
+        t_nueva = inv.get_tasa(moneda)
+        if t_nueva <= 0:
+            raise ValueError("La tasa de cambio es inválida")
+        monto = round(monto_cup_actual / t_nueva, 4)
+        if monto <= 0:
+            raise ValueError("El monto resultante es 0")
+
+        tasa_final = monto_cup_actual / monto if monto else 1.0
+
         conn.execute(
-            "UPDATE pagos SET metodo=? WHERE id=?",
-            (nuevo_metodo, pago_id),
+            "UPDATE pagos SET metodo=?, moneda=?, monto=?, tasa=?, "
+            "monto_cup=? WHERE id=?",
+            (nuevo_metodo, moneda, monto, tasa_final,
+             monto_cup_actual, pago_id),
         )
+
+    return {
+        "metodo": nuevo_metodo,
+        "moneda": moneda,
+        "monto": monto,
+        "tasa": tasa_final,
+        "monto_cup": monto_cup_actual,
+    }
+
+
+def agregar_pago_a_orden(orden_id, metodo, moneda, monto, usuario):
+    """
+    Añade un pago NUEVO a una orden ya registrada.
+    Bloquea duplicados del mismo método.
+    """
+    from configuracion_negocio import (
+        obtener_metodo_pago, moneda_efectiva_metodo,
+    )
+    m = obtener_metodo_pago(metodo)
+    if m is None or not m["activo"]:
+        raise ValueError(f"Método de pago inválido: «{metodo}»")
+
+    mf = moneda_efectiva_metodo(m)
+    if mf:
+        moneda = mf
+
+    moneda = (moneda or "CUP").upper()
+    if moneda not in MONEDAS_VALIDAS:
+        moneda = "CUP"
+
+    monto = float(monto)
+    if monto <= 0:
+        raise ValueError("El monto debe ser mayor que 0")
+
+    with get_conn() as conn:
+        o = conn.execute(
+            "SELECT * FROM ordenes_venta WHERE id=?", (orden_id,)
+        ).fetchone()
+        if o is None:
+            raise ValueError("Orden no encontrada")
+        if o["estado"] == "anulada":
+            raise ValueError("No se puede editar una orden anulada")
+        if o["estado"] == "devuelta":
+            raise ValueError("No se puede editar una orden devuelta")
+
+        # ── Evitar duplicados ──
+        existe = conn.execute(
+            "SELECT 1 FROM pagos WHERE orden_id=? AND metodo=?",
+            (orden_id, metodo)
+        ).fetchone()
+        if existe:
+            raise ValueError(
+                f"Ya existe un pago con «{metodo}» en esta orden. "
+                f"Edita o elimina el existente antes de agregar otro.")
+
+        tasa = inv.get_tasa(moneda)
+        monto_cup = monto * tasa
+
+        cur = conn.execute(
+            "INSERT INTO pagos(orden_id,metodo,moneda,monto,tasa,"
+            "monto_cup,fecha,usuario) VALUES(?,?,?,?,?,?,?,?)",
+            (orden_id, metodo, moneda, monto, tasa, monto_cup,
+             _ahora(),
+             _username(usuario) if usuario else ""),
+        )
+        pago_id = cur.lastrowid
+
+        _recalcular_estado_orden(conn, orden_id)
+
+    inv.invalidar_cache()
+    return pago_id
+
+
+def eliminar_pago(pago_id, usuario):
+    """Elimina un pago y recalcula el estado de la orden."""
+    with get_conn() as conn:
+        p = conn.execute(
+            "SELECT * FROM pagos WHERE id=?", (pago_id,)
+        ).fetchone()
+        if p is None:
+            raise ValueError("Pago no encontrado")
+        o = conn.execute(
+            "SELECT * FROM ordenes_venta WHERE id=?", (p["orden_id"],)
+        ).fetchone()
+        if o is None:
+            raise ValueError("Orden no encontrada")
+        if o["estado"] == "anulada":
+            raise ValueError("No se puede editar una orden anulada")
+
+        conn.execute("DELETE FROM pagos WHERE id=?", (pago_id,))
+        _recalcular_estado_orden(conn, p["orden_id"])
+
+    inv.invalidar_cache()
+
+
+def _recalcular_estado_orden(conn, orden_id):
+    """Recalcula estado y saldo de una orden tras modificar sus pagos."""
+    o = conn.execute(
+        "SELECT * FROM ordenes_venta WHERE id=?", (orden_id,)
+    ).fetchone()
+    if o is None or o["estado"] in ("anulada", "devuelta"):
+        return
+
+    pagos_sum = conn.execute(
+        "SELECT COALESCE(SUM(monto_cup),0) AS t FROM pagos "
+        "WHERE orden_id=?", (orden_id,)
+    ).fetchone()["t"]
+    abonos_sum = conn.execute(
+        "SELECT COALESCE(SUM(monto_cup),0) AS t FROM abonos "
+        "WHERE orden_id=?", (orden_id,)
+    ).fetchone()["t"]
+
+    total = float(o["total"] or 0)
+    pagado = float(pagos_sum or 0) + float(abonos_sum or 0)
+    saldo = max(0.0, total - pagado)
+    vuelto = max(0.0, pagado - total)
+
+    if pagado <= 0.01:
+        estado = "pendiente"
+    elif saldo <= 0.01:
+        estado = "pagada"
+    else:
+        estado = "parcial"
+
+    conn.execute(
+        "UPDATE ordenes_venta SET saldo_pendiente=?, estado=?, "
+        "vuelto_cup=? WHERE id=?",
+        (saldo, estado, vuelto, orden_id),
+    )
+
+
+def cambiar_metodo_pago(pago_id, nuevo_metodo, usuario):
+    """Wrapper viejo → editar_pago. Solo cambia el método."""
+    return editar_pago(pago_id=pago_id, nuevo_metodo=nuevo_metodo,
+                       usuario=usuario)

@@ -67,11 +67,21 @@ def _raiz_datos() -> Path:
     """
     Carpeta donde van datos/, backups/, logs/, tickets/.
 
+    0. Override explícito vía env var ALMACEN_DATA_DIR (tests, CI).
     1. Dev mode  → carpeta del proyecto.
     2. Empaquetado → intenta AL LADO DEL .EXE (portable).
     3. Si no se puede → %LOCALAPPDATA%\\Almacen\\
     4. Último recurso → temp.
     """
+    # ── 0. Override explícito (tests, CI, scripts) ──
+    override = os.environ.get("ALMACEN_DATA_DIR")
+    if override:
+        p = Path(override)
+        try:
+            p.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        return p
     # ── Dev mode ──
     if not _es_empaquetado():
         return Path(__file__).resolve().parent

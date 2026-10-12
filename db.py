@@ -24,16 +24,15 @@ CATEGORIAS_GASTOS_DEFAULT = (
     "Luz", "Agua", "Alquiler", "Salario", "Transporte", "Otros",
 )
 
+# (clave, etiqueta, activo, orden, requiere_moneda, es_credito,
+#  cuenta, qr_imagen, moneda_fija)
 METODOS_PAGO_DEFAULT = (
-    ("Efectivo CUP",    "Efectivo CUP",    1, 1, 0, 0, None, None),
-    ("Efectivo USD",    "Efectivo USD",    0, 2, 1, 0, None, None),
-    ("Efectivo EUR",    "Efectivo EUR",    0, 3, 1, 0, None, None),
-    ("Efectivo MLC",    "Efectivo MLC",    0, 4, 1, 0, None, None),
-    ("Transfermóvil",   "Transfermóvil",   1, 5, 0, 0, None, None),
-    ("EnZona",          "EnZona",          1, 6, 0, 0, None, None),
-    ("Zelle",           "Zelle",           0, 7, 1, 0, None, None),
-    ("Tarjeta",         "Tarjeta",         0, 8, 1, 0, None, None),
-    ("Fiado",           "Fiado",           1, 9, 0, 1, None, None),
+    ("Efectivo",      "Efectivo",       1, 1, 1, 0, None, None, None),
+    ("Transfermóvil", "Transfermóvil",  1, 2, 0, 0, None, None, "CUP"),
+    ("EnZona",        "EnZona",         1, 3, 0, 0, None, None, "CUP"),
+    ("Zelle",         "Zelle",          1, 4, 0, 0, None, None, "USD"),  # ← activo
+    ("Tarjeta",       "Tarjeta",        1, 5, 1, 0, None, None, None),   # ← activo
+    ("Fiado",         "Fiado",          1, 6, 0, 1, None, None, None),
 )
 
 
@@ -276,7 +275,8 @@ CREATE TABLE IF NOT EXISTS metodos_pago (
     requiere_moneda INTEGER NOT NULL DEFAULT 0,
     es_credito      INTEGER NOT NULL DEFAULT 0,
     cuenta          TEXT,
-    qr_imagen       TEXT
+    qr_imagen       TEXT,
+    moneda_fija     TEXT
 );
 
 -- ══════════════════════════════════════════════════════════════
@@ -641,6 +641,7 @@ def _asegurar_columnas_extra(conn) -> None:
     for tabla, col, defn in (
         ("productos", "es_granel", "INTEGER NOT NULL DEFAULT 0"),
         ("movimientos", "proveedor_id", "INTEGER"),
+        ("metodos_pago", "moneda_fija", "TEXT"),
     ):
         try:
             conn.execute(f"ALTER TABLE {tabla} ADD COLUMN {col} {defn}")
@@ -661,15 +662,36 @@ def _asegurar_indices_extra(conn) -> None:
 
 
 def _asegurar_metodos_pago(conn) -> None:
-    for (clave, etiqueta, activo, orden, req_mon, es_cred,
-         cuenta, qr) in METODOS_PAGO_DEFAULT:
-        conn.execute(
-            "INSERT OR IGNORE INTO metodos_pago"
-            "(clave,etiqueta,activo,orden,requiere_moneda,"
-            "es_credito,cuenta,qr_imagen) VALUES(?,?,?,?,?,?,?,?)",
-            (clave, etiqueta, activo, orden, req_mon, es_cred,
-             cuenta, qr))
+    # 1. Migrar pagos históricos con métodos viejos
+    conn.execute(
+        "UPDATE pagos SET metodo='Efectivo' "
+        "WHERE metodo IN ('Efectivo CUP','Efectivo USD',"
+        "                 'Efectivo EUR','Efectivo MLC')"
+    )
 
+    # 2. Borrar métodos viejos (ya no se usan)
+    conn.execute(
+        "DELETE FROM metodos_pago "
+        "WHERE clave IN ('Efectivo CUP','Efectivo USD',"
+        "                'Efectivo EUR','Efectivo MLC')"
+    )
+
+    # 3. Insertar/actualizar los nuevos
+    for (clave, etiqueta, activo, orden, req_mon, es_cred,
+         cuenta, qr, mon_fija) in METODOS_PAGO_DEFAULT:
+        conn.execute(
+            "INSERT INTO metodos_pago"
+            "(clave,etiqueta,activo,orden,requiere_moneda,"
+            "es_credito,cuenta,qr_imagen,moneda_fija) "
+            "VALUES(?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(clave) DO UPDATE SET "
+            "etiqueta=excluded.etiqueta, "
+            "orden=excluded.orden, "
+            "requiere_moneda=excluded.requiere_moneda, "
+            "es_credito=excluded.es_credito, "
+            "moneda_fija=excluded.moneda_fija",
+            (clave, etiqueta, activo, orden, req_mon, es_cred,
+            cuenta, qr, mon_fija))
 
 # ============================================================
 # Preferencias
