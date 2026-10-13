@@ -1,6 +1,7 @@
 """
 Dashboard con métricas de período (calendario) y estado actual.
 Todas las tarjetas de stock son tocables: llevan a /lista-productos.
+Incluye gráficos (flet-charts) y tabla de productos estancados.
 """
 import flet as ft
 import inventario as inv
@@ -10,7 +11,8 @@ import gastos as gs
 from ui import estilos as es
 from ui.componentes import tarjeta_metrica, empty_state
 from ui.principal import barra_navegacion, _chip_local
-import gastos as gs
+from ui import graficos as graf
+from ui import tablas as tbl
 from ui._scroll import columna_scroll
 
 
@@ -56,7 +58,7 @@ def vista_dashboard(app):
         local_id=li_arg, desde=desde, hasta=hasta)
     utilidad_neta = ganancia - gastos_periodo
     pct_utilidad = (utilidad_neta / vendido * 100) if vendido > 0 else 0.0
-    
+
     # ─── Estado del inventario (hoy) ───
     t = inv.totales_local(app.local_id)
     invertido = t["invertido"]
@@ -73,6 +75,15 @@ def vista_dashboard(app):
     cats_activas = cats.listar_categorias(solo_activas=True)
     sin_cat = por_cat.get(None, 0)
 
+    # ═══════════ DATOS PARA GRÁFICOS Y TABLAS ═══════════
+    datos_ventas_dias = met.ventas_ultimos_dias(app.local_id, dias=30)
+    datos_metodos = met.ventas_por_metodo_pago(
+        app.local_id, desde, hasta)
+    datos_top_prods = met.top_productos_vendidos(
+        app.local_id, desde, hasta, limite=10)
+    prods_estancados = met.productos_estancados(
+        app.local_id, dias=30, limite=15)
+
     # ═══════════ CHIPS DE PERÍODO ═══════════
     def chip_periodo(texto, valor):
         activo = (periodo == valor)
@@ -83,13 +94,14 @@ def vista_dashboard(app):
 
         return ft.Container(
             content=ft.Text(texto, size=12,
-            color=(es.COLOR_MARCA_NEGRO if activo
-            else es.COLOR_TEXTO_SUAVE),
-            weight=ft.FontWeight.BOLD),
-            bgcolor=(es.COLOR_ACENTO if activo else es.COLOR_SUPERFICIE),
+                            color=(es.COLOR_MARCA_NEGRO if activo
+                                   else es.COLOR_TEXTO_SUAVE),
+                            weight=ft.FontWeight.BOLD),
+            bgcolor=(es.COLOR_ACENTO if activo
+                     else es.COLOR_SUPERFICIE),
             border=ft.Border.all(1,
-            es.COLOR_ACENTO if activo
-            else es.COLOR_BORDE),
+                                 es.COLOR_ACENTO if activo
+                                 else es.COLOR_BORDE),
             padding=ft.Padding.symmetric(horizontal=14, vertical=8),
             border_radius=20,
             on_click=_click,
@@ -192,7 +204,8 @@ def vista_dashboard(app):
 
     stock_row1 = ft.Row([
         card_stock("Verde", sp["verde"], es.COLOR_VERDE, "verde"),
-        card_stock("Amarillo", sp["amarillo"], es.COLOR_AMARILLO, "amarillo"),
+        card_stock("Amarillo", sp["amarillo"], es.COLOR_AMARILLO,
+                   "amarillo"),
         card_stock("Crítico", sp["rojo"], es.COLOR_ROJO, "critico"),
     ], spacing=8)
     stock_row2 = ft.Row([
@@ -248,22 +261,43 @@ def vista_dashboard(app):
             ft.Icons.CATEGORY_OUTLINED, "Sin tipos",
             "Crea tipos desde el menú lateral.")
 
+    # ═══════════ CONTENIDO FINAL ═══════════
     contenido = ft.Container(
         content=columna_scroll("/dashboard", app, [
             _seccion("Período"),
             chips,
             ft.Container(height=12),
+
             _seccion("Actividad del período"),
             act1, act2, act2b, act3,
             ft.Container(height=12),
+
+            _seccion("📈 Evolución de ventas (30 días)"),
+            _card(graf.grafico_linea_ventas(datos_ventas_dias)),
+            ft.Container(height=12),
+
+            _seccion("🥧 Distribución por método de pago"),
+            _card(graf.grafico_pie_metodos(datos_metodos)),
+            ft.Container(height=12),
+
+            _seccion("🏆 Top productos vendidos"),
+            _card(graf.grafico_barras_top(datos_top_prods)),
+            ft.Container(height=12),
+
             _seccion("Estado del inventario (hoy)"),
             est1, est2,
             ft.Container(height=12),
+
             _seccion("Stock (tocables)"),
             stock_row1, stock_row2,
             ft.Container(height=12),
+
             _seccion("Por tipo de producto"),
             _card(contenido_cat),
+            ft.Container(height=12),
+
+            _seccion("💤 Productos sin ventas (30 días)"),
+            _card(tbl.tabla_estancados(app, prods_estancados, dias=30)),
             ft.Container(height=30),
         ], spacing=10),
         padding=ft.Padding.all(14),
@@ -298,3 +332,4 @@ def _stats_productos(local_id):
             r += 1
     return {"total": total, "stock_cero": sc,
             "verde": v, "amarillo": a, "rojo": r}
+    

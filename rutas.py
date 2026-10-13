@@ -37,15 +37,19 @@ def _ruta_exe() -> Path | None:
 
 
 def _es_empaquetado() -> bool:
-    """True si corremos dentro del .exe compilado por Flet."""
-    if os.environ.get("FLET_APP_STORAGE_DATA"):
-        return True
+    """
+    True solo si corremos DENTRO del .exe compilado por Flet.
+
+    OJO: Flet setea FLET_APP_STORAGE_DATA también en `flet run`,
+    por eso NO lo usamos como señal — solo miramos sys.frozen
+    (PyInstaller/cx_Freeze) o si el proceso principal es un .exe
+    que no es python.exe (empaquetado con flet build).
+    """
     if getattr(sys, "frozen", False):
         return True
     if _ruta_exe() is not None:
         return True
     return False
-
 
 # ============================================================
 # Raíz de datos

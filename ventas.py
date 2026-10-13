@@ -534,9 +534,12 @@ def editar_items_orden(orden_id, items_nuevos, usuario, fecha=None):
     """
     Reemplaza los items de una orden existente.
     Recalcula total, saldo y stock. Mantiene pagos y abonos ya hechos.
+
+    IMPORTANTE: los movimientos nuevos se crean con la FECHA ORIGINAL
+    de la orden, no con la fecha de edición, para que el Historial y
+    los Excel reflejen cuándo se hizo realmente la venta.
     """
     username = _username(usuario)
-    fecha = fecha or _ahora()
     if not items_nuevos:
         raise ValueError("La orden debe tener al menos un ítem")
 
@@ -550,6 +553,9 @@ def editar_items_orden(orden_id, items_nuevos, usuario, fecha=None):
             raise ValueError("No se puede editar una orden anulada")
         if o["estado"] == "devuelta":
             raise ValueError("No se puede editar una orden devuelta")
+
+        # ⬇️ FIX: la fecha del movimiento es la de la orden original
+        fecha = fecha or o["fecha"]
 
         # ── Validar que la orden no quede sin pagos/abonos ──
         _p, _a = 0, 0
@@ -577,10 +583,12 @@ def editar_items_orden(orden_id, items_nuevos, usuario, fecha=None):
                     "fecha_ultima_mod=? WHERE id=?",
                     (it["cantidad"], fecha, it["producto_id"]))
 
+        # FIX: borrado más robusto por si el detalle quedó desfasado
         conn.execute(
             "DELETE FROM movimientos WHERE tipo='SALIDA' "
-            "AND motivo='Venta' AND detalle=?",
-            (f"Ticket {o['numero_ticket']}",))
+            "AND motivo IN ('Venta', 'venta', 'Combos', 'combos') "
+            "AND detalle LIKE ?",
+            (f"%{o['numero_ticket']}%",))
         conn.execute(
             "DELETE FROM orden_items WHERE orden_id=?", (orden_id,))
 
@@ -621,14 +629,13 @@ def editar_items_orden(orden_id, items_nuevos, usuario, fecha=None):
             "WHERE orden_id=?", (orden_id,)
         ).fetchone()["t"]
         pagos_efectivo = conn.execute(
-            "SELECT COALESCE(SUM(monto_cup),0) AS t FROM pagos p "
+            "SELECT COALESCE(SUM(p.monto_cup),0) AS t FROM pagos p "
             "JOIN metodos_pago m ON m.clave=p.metodo "
             "WHERE p.orden_id=? AND m.es_credito=0 "
             "AND p.metodo = 'Efectivo'",
             (orden_id,)
         ).fetchone()["t"]
 
-        # Suma de pagos que NO pueden dar vuelto:
         pagos_sin_vuelto = (float(pagos_no_efectivo_no_credito or 0)
                             + float(abonos_suma or 0))
         if pagos_sin_vuelto > total_nuevo + 0.01:
@@ -638,7 +645,6 @@ def editar_items_orden(orden_id, items_nuevos, usuario, fecha=None):
                 f"total ({total_nuevo:.2f} CUP). Ajusta los pagos "
                 f"antes de modificar los items.")
 
-        # Cobrado total = todo lo pagado (efectivo + no-efectivo) + abonos
         cobrado_total = (float(pagos_no_efectivo_no_credito or 0)
                          + float(pagos_efectivo or 0)
                          + float(abonos_suma or 0))
@@ -707,7 +713,6 @@ def editar_items_orden(orden_id, items_nuevos, usuario, fecha=None):
             (round(subtotal, 2), round(descuento_total, 2),
              total_nuevo, nuevo_saldo, nuevo_estado, orden_id))
 
-        # Sincronizar el pago Fiado con el nuevo saldo
         _sincronizar_pago_fiado(conn, orden_id, nuevo_saldo)
 
     inv.invalidar_cache()
@@ -716,7 +721,6 @@ def editar_items_orden(orden_id, items_nuevos, usuario, fecha=None):
         "estado": nuevo_estado,
         "saldo_pendiente": nuevo_saldo,
     }
-
 
 # ═══════════════════════════════════════════════════════════
 # PAGOS: editar / agregar / eliminar

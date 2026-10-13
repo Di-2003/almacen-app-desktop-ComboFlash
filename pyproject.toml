@@ -3,11 +3,16 @@ name = "Almacen"
 version = "1.0.0"
 description = "Almacen — multi-local con POS (Flet 1.0+)"
 dependencies = [
-    "flet==1.0.3",
+    "flet==1.0.4",
     "openpyxl",
     "lxml>=5.0.0",
     "fpdf2>=2.7.8",
     "Pillow>=10.0.0",
+    "flet-datatable2==1.0.4",
+    "flet-charts==1.0.4",
+    "flet-cli==1.0.4",
+    "flet-desktop==1.0.4",
+    "flet-web==1.0.4",
 ]
 [tool.flet]
 product_name = "Almacen"
