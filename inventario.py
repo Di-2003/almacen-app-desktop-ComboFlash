@@ -1164,9 +1164,6 @@ def renombrar_producto(producto_id, nombre_nuevo, usuario):
                 f"Ya existe un producto «{nombre_nuevo}» en "
                 f"«{otro['local_nombre']}». Usa un nombre distinto.")
 
-        # FIX: aplicar el nombre nuevo a TODOS los locales.
-        # Antes solo se registraba el AJUSTE y se actualizaban los
-        # proveedores, pero la tabla `productos` no se tocaba.
         conn.execute(
             "UPDATE productos SET nombre=?, fecha_ultima_mod=? "
             "WHERE nombre=? COLLATE NOCASE",
@@ -1333,9 +1330,6 @@ def totales_por_concepto(local_id) -> dict:
 # ================= ELIMINAR MOVIMIENTO =================
 
 def _revertir_efecto_stock(conn, producto_id, tipo, cantidad):
-    # FIX: tipos sin efecto sobre stock → se pueden borrar sin más.
-    # AJUSTE, UMBRAL y RESTAURACION se insertan con cantidad=0 y
-    # solo dejan traza; no alteran el stock.
     if tipo in ("AJUSTE", "UMBRAL", "RESTAURACION"):
         return
 
@@ -1456,9 +1450,6 @@ def editar_movimiento(mov_id, producto_id, tipo, cantidad, motivo,
         if nuevo_prod is None:
             raise ValueError("Producto no encontrado")
 
-        # ── Calcular stock EFECTIVO después de revertir el original ──
-        # (necesario para validar correctamente cuando el producto
-        #  destino es el MISMO que el original)
         stock_efectivo = float(nuevo_prod["stock"] or 0)
         if mov["producto_id"] == nuevo_prod["id"]:
             if mov["tipo"] == "ENTRADA":
@@ -1469,12 +1460,10 @@ def editar_movimiento(mov_id, producto_id, tipo, cantidad, motivo,
         if tipo == "SALIDA" and cantidad > stock_efectivo:
             raise StockInsuficiente(stock_efectivo, cantidad)
 
-        # ── Revertir efecto del original ──
         _revertir_efecto_stock(
             conn, mov["producto_id"], mov["tipo"],
             float(mov["cantidad"] or 0))
 
-        # ── Aplicar efecto del nuevo ──
         if tipo == "ENTRADA":
             conn.execute(
                 "UPDATE productos SET stock=stock+?, fecha_ultima_mod=? "
@@ -1486,13 +1475,13 @@ def editar_movimiento(mov_id, producto_id, tipo, cantidad, motivo,
                 "WHERE id=?",
                 (cantidad, fecha, nuevo_prod["id"]))
 
-        # ── Actualizar registro ──
         conn.execute(
             "UPDATE movimientos SET local_id=?, producto_id=?, tipo=?, "
             "cantidad=?, motivo=?, fecha=?, usuario=? WHERE id=?",
             (nuevo_prod["local_id"], nuevo_prod["id"], tipo, cantidad,
              motivo, fecha, username, mov_id))
         
+
 def buscar_productos_like(texto: str, local_id, limite: int = 8) -> list[dict]:
     """
     Busca productos activos cuyo nombre CONTENGA texto (case-insensitive).
@@ -1548,3 +1537,4 @@ def contar_movimientos(local_id=None, producto_id=None,
     with get_conn() as conn:
         row = conn.execute(sql, tuple(params)).fetchone()
     return int(row["n"] or 0)
+
