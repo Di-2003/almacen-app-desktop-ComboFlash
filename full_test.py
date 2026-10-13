@@ -1297,10 +1297,11 @@ def test_venta_fiado_y_abonos():
     assert cli.saldo_pendiente(cid) == 0
 
 
-def test_abono_supera_saldo():
+def test_abono_mayor_con_vuelto_cero_es_propina():
+    """Abono > saldo con vuelto=0 → guarda el sobrante como propina."""
     a = loc.obtener_almacen()
     p = inv.buscar_producto_por_nombre("Arroz", a["id"])
-    cid = cli.crear_cliente("Fiado Abono Exceso")
+    cid = cli.crear_cliente("Cliente Propina")
     c = ven.nuevo_carrito()
     ven.agregar_item(c, p, 2)
     c["cliente_id"] = cid
@@ -1310,14 +1311,50 @@ def test_abono_supera_saldo():
         pagos=[{"metodo": "Fiado", "moneda": "CUP",
                 "monto": t["total"], "tasa": 1.0}],
         usuario=USR_ADMIN, local_id=a["id"])
-    try:
-        cli.registrar_abono(
-            orden_id=r["orden_id"], monto=t["total"] + 100,
-            moneda="CUP", metodo="Efectivo", usuario=USR_ADMIN)
-        assert False
-    except ValueError:
-        pass
 
+    # Abono el doble del saldo, vuelto = 0 → propina
+    cli.registrar_abono(
+        orden_id=r["orden_id"],
+        monto=t["total"] * 2,
+        moneda="CUP",
+        metodo="Efectivo",
+        usuario=USR_ADMIN,
+        vuelto=0.0)
+
+    o = ven.obtener_orden(r["orden_id"])
+    assert o["estado"] == "pagada"
+    assert abs(o["saldo_pendiente"]) < 0.01
+    assert cli.saldo_pendiente(cid) == 0
+
+
+def test_abono_con_vuelto_no_aplica_el_sobrante():
+    """Abono con vuelto: solo la parte sin vuelto reduce el saldo."""
+    a = loc.obtener_almacen()
+    p = inv.buscar_producto_por_nombre("Arroz", a["id"])
+    cid = cli.crear_cliente("Cliente Vuelto")
+    c = ven.nuevo_carrito()
+    ven.agregar_item(c, p, 2)
+    c["cliente_id"] = cid
+    t = ven.calcular_totales(c)
+    r = ven.registrar_venta(
+        carrito=c,
+        pagos=[{"metodo": "Fiado", "moneda": "CUP",
+                "monto": t["total"], "tasa": 1.0}],
+        usuario=USR_ADMIN, local_id=a["id"])
+
+    # Abono el doble, la mitad como vuelto → el abono efectivo
+    # iguala el saldo
+    cli.registrar_abono(
+        orden_id=r["orden_id"],
+        monto=t["total"] * 2,
+        moneda="CUP",
+        metodo="Efectivo",
+        usuario=USR_ADMIN,
+        vuelto=t["total"])
+
+    o = ven.obtener_orden(r["orden_id"])
+    assert o["estado"] == "pagada"
+    assert abs(o["saldo_pendiente"]) < 0.01
 
 def test_venta_anular_restaura_stock():
     a = loc.obtener_almacen()
@@ -3044,7 +3081,8 @@ TESTS = [
     ("Venta carrito vacío",             test_venta_carrito_vacio),
     ("Fiado requiere cliente",          test_venta_fiado_requiere_cliente),
     ("Fiado + abonos",                  test_venta_fiado_y_abonos),
-    ("Abono > saldo",                   test_abono_supera_saldo),
+    ("Abono > saldo con vuelto 0",      test_abono_mayor_con_vuelto_cero_es_propina),
+    ("Abono con vuelto parcial",        test_abono_con_vuelto_no_aplica_el_sobrante),
     ("Anular restaura stock",           test_venta_anular_restaura_stock),
     ("Anular dos veces",                test_anular_orden_dos_veces),
     ("Venta stock insuficiente",        test_venta_stock_insuficiente),

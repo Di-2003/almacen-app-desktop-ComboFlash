@@ -125,7 +125,6 @@ def activar_cliente(cid: int, activo: bool) -> None:
 # ── Cuentas por cobrar ──
 
 def saldo_pendiente(cid) -> float:
-    """Deuda total del cliente (todas las órdenes pendientes/parciales)."""
     if cid is None:
         return 0.0
     with get_conn() as conn:
@@ -139,7 +138,6 @@ def saldo_pendiente(cid) -> float:
 
 
 def listar_con_deuda() -> list[dict]:
-    """Clientes con saldo pendiente, ordenados por deuda descendente."""
     with get_conn() as conn:
         rows = conn.execute(
             "SELECT c.*, COALESCE(SUM(o.saldo_pendiente),0) AS deuda "
@@ -175,12 +173,24 @@ def listar_ordenes_pendientes(cid) -> list[dict]:
 # ── Abonos ──
 
 def registrar_abono(orden_id, monto, moneda, metodo, usuario,
-                    tasa=None, notas=None) -> dict:
+                    tasa=None, notas=None, vuelto=0.0) -> dict:
     """
-    Registra un abono parcial a una orden con saldo pendiente.
-    Ajusta el saldo y el estado (parcial/pagada).
+    Registra un abono a una orden pendiente.
+
+    - `monto`: monto BRUTO en la moneda elegida.
+    - `vuelto`: monto devuelto al cliente, en la MISMA moneda del abono.
+    - `abonos.monto_cup` guardado = monto APLICADO al saldo (neto de
+      vuelto y limitado al saldo pendiente).
+    - El exceso (bruto - vuelto - aplicado) es propina: no se registra
+      en ninguna parte pero SÍ suma al efectivo real del cajón. La
+      diferencia solo se ve si hay caja abierta (cuadre en rojo/verde).
+
+    El recálculo dispara `_recalcular_estado_orden`, que sincroniza
+    el pago Fiado con el nuevo saldo pendiente.
     """
     from inventario import get_tasa
+    from ventas import _recalcular_estado_orden
+
     monto = float(monto)
     if monto <= 0:
         raise ValueError("El abono debe ser mayor que 0")
@@ -189,6 +199,15 @@ def registrar_abono(orden_id, monto, moneda, metodo, usuario,
         tasa = get_tasa(moneda)
     tasa = float(tasa)
     monto_cup = monto * tasa
+    vuelto = float(vuelto or 0)
+    if vuelto < 0:
+        raise ValueError("El vuelto no puede ser negativo")
+    vuelto_cup = vuelto * tasa
+    if vuelto_cup > monto_cup + 0.01:
+        raise ValueError("El vuelto no puede superar el monto")
+
+    neto_cup = monto_cup - vuelto_cup
+
     username = (usuario["username"]
                 if isinstance(usuario, dict) else str(usuario))
 
@@ -201,24 +220,30 @@ def registrar_abono(orden_id, monto, moneda, metodo, usuario,
         saldo = float(o["saldo_pendiente"] or 0)
         if saldo <= 0.01:
             raise ValueError("Esta orden no tiene saldo pendiente")
-        if monto_cup > saldo + 0.01:
-            raise ValueError(
-                f"El abono ({monto_cup:.2f} CUP) supera el saldo "
-                f"pendiente ({saldo:.2f} CUP)")
+
+        # Solo aplicamos al saldo lo necesario. El resto es propina.
+        monto_aplicado_cup = min(neto_cup, saldo)
+
         conn.execute(
             "INSERT INTO abonos(orden_id,monto,moneda,tasa,monto_cup,"
-            "metodo,fecha,usuario,notas) VALUES(?,?,?,?,?,?,?,?,?)",
-            (orden_id, monto, moneda, tasa, monto_cup, metodo,
-            _ahora(), username, _norm(notas))
+            "metodo,fecha,usuario,notas,vuelto_cup) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (orden_id, monto, moneda, tasa, monto_aplicado_cup, metodo,
+             _ahora(), username, _norm(notas), vuelto_cup)
         )
-        nuevo_saldo = max(0.0, saldo - monto_cup)
-        nuevo_estado = "pagada" if nuevo_saldo <= 0.01 else "parcial"
-        conn.execute(
-            "UPDATE ordenes_venta SET saldo_pendiente=?, estado=? "
-            "WHERE id=?", (nuevo_saldo, nuevo_estado, orden_id)
-        )
-    return {"saldo": nuevo_saldo, "estado": nuevo_estado,
-            "monto_cup": monto_cup}
+
+        _recalcular_estado_orden(conn, orden_id)
+
+        o2 = conn.execute(
+            "SELECT saldo_pendiente, estado FROM ordenes_venta "
+            "WHERE id=?", (orden_id,)
+        ).fetchone()
+
+    return {
+        "saldo": float(o2["saldo_pendiente"]),
+        "estado": o2["estado"],
+        "monto_cup": monto_aplicado_cup,
+    }
 
 
 def listar_abonos(orden_id) -> list[dict]:

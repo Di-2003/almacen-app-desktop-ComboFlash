@@ -642,6 +642,7 @@ def _asegurar_columnas_extra(conn) -> None:
         ("productos", "es_granel", "INTEGER NOT NULL DEFAULT 0"),
         ("movimientos", "proveedor_id", "INTEGER"),
         ("metodos_pago", "moneda_fija", "TEXT"),
+        ("abonos", "vuelto_cup", "REAL NOT NULL DEFAULT 0"),
     ):
         try:
             conn.execute(f"ALTER TABLE {tabla} ADD COLUMN {col} {defn}")

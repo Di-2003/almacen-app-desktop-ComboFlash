@@ -7,6 +7,7 @@ POS — Nueva Venta.
 - Al confirmar: registra venta + muestra ticket para compartir.
 """
 import flet as ft
+import math
 from db import GENERAL_ID
 import inventario as inv
 import categorias as cats
@@ -23,6 +24,38 @@ from ui._scroll import columna_scroll
 
 PASO_PAGINACION = 40
 
+
+# ═══════════════════════════════════════════════════════════
+# HELPERS DE REDONDEO DE EFECTIVO
+# ═══════════════════════════════════════════════════════════
+
+def _es_efectivo_usd_eur(metodo_conf) -> bool:
+    """True si es Efectivo con moneda fija USD o EUR."""
+    if not metodo_conf:
+        return False
+    return (metodo_conf.get("clave") == "Efectivo"
+            and metodo_conf.get("moneda_fija") in ("USD", "EUR"))
+
+
+def _redondear_efectivo(monto: float, moneda: str) -> float:
+    """Redondea hacia arriba a entero para USD/EUR."""
+    if (moneda or "").upper() in ("USD", "EUR"):
+        return float(math.ceil(monto))
+    return round(monto, 2)
+
+
+def _calcular_vuelto(monto_moneda: float, tasa: float,
+                     total_cup: float) -> float:
+    """Vuelto en la moneda del pago."""
+    pagado_cup = monto_moneda * tasa
+    if pagado_cup <= total_cup:
+        return 0.0
+    return round((pagado_cup - total_cup) / tasa, 2)
+
+
+# ═══════════════════════════════════════════════════════════
+# VISTA PRINCIPAL DEL POS
+# ═══════════════════════════════════════════════════════════
 
 def vista_pos(app):
     page = app.page
@@ -47,7 +80,6 @@ def vista_pos(app):
     lista = columna_scroll("/pos", app, [], spacing=8)
     contenedor_carrito = ft.Container()
 
-    # ─── BÚSQUEDA ───
     def on_search(e):
         estado["filtro"] = (e.control.value or "").lower()
         estado["visibles"] = PASO_PAGINACION
@@ -58,7 +90,6 @@ def vista_pos(app):
         on_change=on_search,
     )
 
-    # ─── CHIPS CATEGORÍA ───
     def chip_cat(cat_id, nombre, activo):
         def _click(e):
             estado["cat"] = cat_id
@@ -91,7 +122,6 @@ def vista_pos(app):
         if mounted(fila_cats):
             fila_cats.update()
 
-    # ─── AGREGAR AL CARRITO ───
     def agregar(producto, cantidad=1):
         try:
             ven.agregar_item(app._carrito_pos, producto, cantidad)
@@ -103,7 +133,6 @@ def vista_pos(app):
         refrescar_carrito()
         refrescar()
 
-    # ─── FILA PRODUCTO POS ───
     def fila_pos(p):
         stock = float(p["stock"] or 0)
         color = inv.color_de_producto(p)
@@ -144,7 +173,8 @@ def vista_pos(app):
                     ft.Text("CUP", size=10,
                             color=es.COLOR_TEXTO_TENUE,
                             text_align=ft.TextAlign.RIGHT),
-                ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.END),
+                ], spacing=0,
+                    horizontal_alignment=ft.CrossAxisAlignment.END),
                 ft.IconButton(
                     ft.Icons.ADD_CIRCLE,
                     icon_color=(es.COLOR_EXITO if disponible
@@ -163,7 +193,6 @@ def vista_pos(app):
             opacity=1.0 if disponible else 0.5,
         )
 
-    # ─── REFRESCAR LISTA ───
     def refrescar():
         lista.controls.clear()
         prods = inv.listar_productos(app.local_id, solo_activos=True)
@@ -203,7 +232,6 @@ def vista_pos(app):
         if mounted(lista):
             lista.update()
 
-    # ─── CARRITO — BOTÓN FLOTANTE ───
     def refrescar_carrito():
         tot = ven.calcular_totales(app._carrito_pos)
         n = sum(1 for _ in app._carrito_pos["items"])
@@ -286,9 +314,9 @@ def vista_pos(app):
     )
 
 
-# ────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
 # NAV
-# ────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
 
 def _nav(app, indice):
     def cambiar(e):
@@ -380,9 +408,9 @@ def _vaciar(app, on_change):
     ))
 
 
-# ────────────────────────────────────────────────────────────
-# CARRITO (bottom sheet)
-# ────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
+# CARRITO
+# ═══════════════════════════════════════════════════════════
 
 def _abrir_carrito(app, on_refresh_lista, on_refresh_carrito):
     page = app.page
@@ -394,7 +422,6 @@ def _abrir_carrito(app, on_refresh_lista, on_refresh_carrito):
         contenido_col.controls.clear()
         tot = ven.calcular_totales(carrito)
 
-        # Items
         if not carrito["items"]:
             contenido_col.controls.append(empty_state(
                 ft.Icons.SHOPPING_CART_OUTLINED, "Carrito vacío",
@@ -405,15 +432,12 @@ def _abrir_carrito(app, on_refresh_lista, on_refresh_carrito):
                     app, i, it, rebuild, on_refresh_lista,
                     on_refresh_carrito))
 
-        # Cliente
         contenido_col.controls.append(ft.Divider(
             height=1, color=es.COLOR_BORDE))
         contenido_col.controls.append(_selector_cliente(app, rebuild))
 
-        # Descuento global
         contenido_col.controls.append(_campo_descuento(app, rebuild))
 
-        # Totales
         contenido_col.controls.append(ft.Container(
             content=ft.Column([
                 _fila_total("Subtotal", f"${tot['subtotal']:,.2f}"),
@@ -431,7 +455,6 @@ def _abrir_carrito(app, on_refresh_lista, on_refresh_carrito):
             margin=ft.Margin.only(top=4),
         ))
 
-        # Botón cobrar
         if carrito["items"]:
             contenido_col.controls.append(ft.Container(
                 content=ft.FilledButton(
@@ -792,9 +815,9 @@ def _fila_total(label, valor, color=None, grande=False):
     ])
 
 
-# ────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
 # COBRO
-# ────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
 
 def _abrir_cobro(app, bs_carrito, rebuild_carrito,
                  on_refresh_lista, on_refresh_carrito):
@@ -819,7 +842,6 @@ def _abrir_cobro(app, bs_carrito, rebuild_carrito,
     def rebuild():
         contenido_col.controls.clear()
 
-        # Lista de pagos
         if not pagos_state["pagos"]:
             contenido_col.controls.append(ft.Container(
                 content=ft.Text("Sin pagos todavía. Agrega uno abajo.",
@@ -834,7 +856,6 @@ def _abrir_cobro(app, bs_carrito, rebuild_carrito,
                 contenido_col.controls.append(_fila_pago(
                     app, i, p, pagos_state, rebuild, tot))
 
-        # Sumas
         total_pagado_cup = sum(
             p["monto"] * p["tasa"] for p in pagos_state["pagos"]
         )
@@ -858,7 +879,6 @@ def _abrir_cobro(app, bs_carrito, rebuild_carrito,
             border_radius=12,
         ))
 
-        # Botón agregar pago
         puede_agregar = len(pagos_state["pagos"]) < 3
         contenido_col.controls.append(ft.FilledButton(
             f"+ Agregar pago ({3 - len(pagos_state['pagos'])} restantes)",
@@ -874,7 +894,6 @@ def _abrir_cobro(app, bs_carrito, rebuild_carrito,
             else None,
         ))
 
-        # Botón confirmar
         confirmar_ok = (falta <= 0.01 and len(pagos_state["pagos"]) > 0)
         contenido_col.controls.append(ft.FilledButton(
             "Confirmar venta",
@@ -922,8 +941,9 @@ def _fila_pago(app, idx, p, pagos_state, rebuild, tot):
                            for q in pagos_state["pagos"])
         este = p["monto"] * p["tasa"]
         falta_sin_este = max(0, tot["total"] - (total_pagado - este))
-        _agregar_pago(app, metodo, falta_sin_este, pagos_state,
-                      rebuild, indice_existente=idx)
+        _agregar_pago(
+            app, metodo, falta_sin_este, pagos_state, rebuild,
+            indice_existente=idx)
 
     return ft.Container(
         content=ft.Row([
@@ -976,7 +996,6 @@ def _elegir_metodo(app, metodos, pagos_state, rebuild):
                  else ft.Icons.ACCOUNT_BALANCE_WALLET)
         color_icono = (es.COLOR_AMBAR if m.get("es_credito")
                        else es.COLOR_EXITO)
-
         subtitulo = m.get("moneda_fija") or (
             "Crédito" if m.get("es_credito") else "Libre")
 
@@ -1005,40 +1024,33 @@ def _elegir_metodo(app, metodos, pagos_state, rebuild):
 def _agregar_pago(app, metodo, falta_cup, pagos_state, rebuild,
                   indice_existente=None):
     """
-    Diálogo para agregar/editar un pago del carrito.
+    Diálogo para agregar/editar un pago del carrito en el POS.
 
-    - Moneda fija por método → dropdown bloqueado.
-    - Moneda libre → dropdown activo y auto-monto al cambiar.
-    - Monto editable (por si hay vuelto).
-    - Fiado → confirma directo sin monto.
+    - Chips de moneda (no Dropdown: Flet 1.0.3 no propaga on_change).
+    - Efectivo USD/EUR: redondeo hacia arriba a entero + campo vuelto.
+    - Fiado: diálogo específico con cliente.
     """
     from configuracion_negocio import (
         moneda_efectiva_metodo, es_credito_metodo,
     )
     page = app.page
 
-    # Fiado: no pide monto, cubre el total
+    # Fiado
     if es_credito_metodo(metodo):
-        nuevo = {
-            "metodo": metodo["clave"],
-            "moneda": "CUP",
-            "monto": falta_cup,
-            "tasa": 1.0,
-        }
-        if indice_existente is not None:
-            pagos_state["pagos"][indice_existente] = nuevo
-        else:
-            pagos_state["pagos"].append(nuevo)
-        rebuild()
+        _dlg_fiado(app, metodo, falta_cup, pagos_state, rebuild,
+                   indice_existente)
         return
 
-    # Moneda inicial
     moneda_fija = moneda_efectiva_metodo(metodo)
     moneda_inicial = moneda_fija or "CUP"
 
-    # Monto inicial = falta en la moneda inicial
     tasa_ini = inv.get_tasa(moneda_inicial)
     monto_ini = round(falta_cup / tasa_ini, 2) if tasa_ini else 0.0
+    # Redondear hacia arriba si es Efectivo USD/EUR
+    if _es_efectivo_usd_eur(metodo):
+        monto_ini = _redondear_efectivo(monto_ini, moneda_inicial)
+
+    estado = {"moneda": moneda_inicial}
 
     tf_monto = ft.TextField(
         label=f"Monto ({moneda_inicial})",
@@ -1047,84 +1059,105 @@ def _agregar_pago(app, metodo, falta_cup, pagos_state, rebuild,
         autofocus=True,
         **es.estilo_textfield(12), height=54)
 
-    if moneda_fija:
-        dd_moneda = ft.Dropdown(
-            label="Moneda",
-            value=moneda_fija,
-            options=[ft.DropdownOption(key=moneda_fija,
-                                       text=moneda_fija)],
-            disabled=True,
-            **es.borde_textfield(12))
-    else:
-        dd_moneda = ft.Dropdown(
-            label="Moneda",
-            value="CUP",
-            options=[
-                ft.DropdownOption(key="CUP", text="$ CUP"),
-                ft.DropdownOption(key="USD", text="USD$ USD"),
-                ft.DropdownOption(key="EUR", text="€ EUR"),
-            ],
-            **es.borde_textfield(12))
-
+    contenedor_chips = ft.Row(spacing=6, wrap=True)
     lbl_info = ft.Text("", size=11, color=es.COLOR_TEXTO_SUAVE)
+    lbl_vuelto = ft.Text("", size=12, color=es.COLOR_EXITO,
+                         weight=ft.FontWeight.BOLD)
     error_lbl = ft.Text("", color=es.COLOR_PELIGRO, size=12)
 
-    def _rec_info():
-        m = (dd_moneda.value or "CUP").upper()
-        t = inv.get_tasa(m)
+    def _leer_monto():
         try:
-            v = float((tf_monto.value or "0").replace(",", "."))
+            return float((tf_monto.value or "0").replace(",", "."))
         except ValueError:
-            v = 0.0
-        lbl_info.value = (f"1 {m} = {t:.2f} CUP  ·  "
-                          f"equivalente: ${v * t:,.2f} CUP")
+            return 0.0
+
+    def _convertir_moneda(m):
+        v_antes = _leer_monto()
+        m_antes = estado["moneda"]
+        t_antes = inv.get_tasa(m_antes)
+        t_nueva = inv.get_tasa(m)
+        if t_antes > 0 and t_nueva > 0 and m_antes != m:
+            v_nueva = round(v_antes * t_antes / t_nueva, 2)
+            if _es_efectivo_usd_eur(metodo):
+                v_nueva = _redondear_efectivo(v_nueva, m)
+            tf_monto.value = f"{v_nueva:.2f}"
+            try:
+                tf_monto.update()
+            except Exception:
+                pass
+        estado["moneda"] = m
+
+    def _elegir_moneda(m):
+        if estado["moneda"] == m:
+            return
+        _convertir_moneda(m)
+        _rebuild_chips()
+        _rec_info()
+
+    def _rebuild_chips():
+        contenedor_chips.controls.clear()
+        opciones = ([moneda_fija] if moneda_fija
+                    else ["CUP", "USD", "EUR"])
+        for op in opciones:
+            activo = estado["moneda"] == op
+            color = es.COLOR_ACENTO if activo else es.COLOR_SUPERFICIE
+            color_txt = ("#ffffff" if activo
+                         else es.COLOR_TEXTO_SUAVE)
+            contenedor_chips.controls.append(ft.Container(
+                content=ft.Text(op, size=12, color=color_txt,
+                                weight=ft.FontWeight.BOLD),
+                bgcolor=color,
+                border=ft.Border.all(
+                    1, es.COLOR_ACENTO if activo else es.COLOR_BORDE),
+                padding=ft.Padding.symmetric(horizontal=14,
+                                             vertical=8),
+                border_radius=20,
+                on_click=lambda e, mm=op: _elegir_moneda(mm),
+                ink=True))
         try:
-            lbl_info.update()
+            contenedor_chips.update()
         except Exception:
             pass
 
-    def _on_moneda(e):
-        # Al cambiar moneda: recalcular monto preservando el valor
-        # en CUP que había en pantalla.
+    def _rec_info():
+        m = estado["moneda"]
+        t = inv.get_tasa(m)
+        v = _leer_monto()
+        lbl_info.value = (f"1 {m} = {t:.2f} CUP  ·  "
+                          f"equivalente: ${v * t:,.2f} CUP  ·  "
+                          f"falta: ${falta_cup:,.2f} CUP")
+        # Vuelto solo en Efectivo USD/EUR
+        if _es_efectivo_usd_eur(metodo):
+            vuelto = _calcular_vuelto(v, t, falta_cup)
+            if vuelto > 0.001:
+                lbl_vuelto.value = (f"Vuelto al cliente: "
+                                    f"{vuelto:.2f} {m}")
+            else:
+                lbl_vuelto.value = ""
+        else:
+            lbl_vuelto.value = ""
         try:
-            v_antes = float((tf_monto.value or "0").replace(",", "."))
-        except ValueError:
-            v_antes = 0.0
-        m_antes = estado["moneda"]
-        m_nueva = (dd_moneda.value or "CUP").upper()
-        if m_antes != m_nueva and m_nueva:
-            t_antes = inv.get_tasa(m_antes)
-            t_nueva = inv.get_tasa(m_nueva)
-            if t_antes > 0 and t_nueva > 0:
-                valor_cup = v_antes * t_antes
-                v_nueva = round(valor_cup / t_nueva, 2)
-                tf_monto.value = f"{v_nueva:.2f}"
-                try:
-                    tf_monto.update()
-                except Exception:
-                    pass
-        estado["moneda"] = m_nueva
-        _rec_info()
+            lbl_info.update()
+            lbl_vuelto.update()
+        except Exception:
+            pass
 
-    estado = {"moneda": moneda_inicial}
-    if not moneda_fija:
-        dd_moneda.on_change = _on_moneda
     tf_monto.on_change = lambda e: _rec_info()
+
+    _rebuild_chips()
     _rec_info()
 
     def guardar(e):
         error_lbl.value = ""
-        m = (dd_moneda.value or "CUP").upper()
-        try:
-            v = float((tf_monto.value or "0").replace(",", "."))
-        except ValueError:
-            error_lbl.value = "Monto inválido"
-            page.update()
-            return
+        m = estado["moneda"]
+        v = _leer_monto()
         if v <= 0:
             error_lbl.value = "El monto debe ser mayor que 0"
             page.update()
             return
+        # Redondeo duro si Efectivo USD/EUR
+        if _es_efectivo_usd_eur(metodo):
+            v = _redondear_efectivo(v, m)
         nuevo = {
             "metodo": metodo["clave"],
             "moneda": m,
@@ -1138,13 +1171,23 @@ def _agregar_pago(app, metodo, falta_cup, pagos_state, rebuild,
         page.pop_dialog()
         rebuild()
 
-    titulo = "Editar pago" if indice_existente is not None else "Pago"
-    texto_boton = "Guardar" if indice_existente is not None else "Agregar"
+    titulo = (f"Editar pago: {metodo['etiqueta']}"
+              if indice_existente is not None
+              else f"Pago: {metodo['etiqueta']}")
+    texto_boton = ("Guardar" if indice_existente is not None
+                   else "Agregar")
 
     page.show_dialog(ft.AlertDialog(
-        title=ft.Text(f"{titulo}: {metodo['etiqueta']}"),
+        title=ft.Text(titulo),
         content=ft.Column([
-            dd_moneda, tf_monto, lbl_info, error_lbl,
+            ft.Text("Moneda", size=11,
+                    color=es.COLOR_TEXTO_SUAVE),
+            contenedor_chips,
+            ft.Container(height=4),
+            tf_monto,
+            lbl_info,
+            lbl_vuelto,
+            error_lbl,
         ], tight=True, width=340, spacing=10),
         actions=[
             ft.TextButton("Cancelar",
@@ -1154,6 +1197,132 @@ def _agregar_pago(app, metodo, falta_cup, pagos_state, rebuild,
         ],
         actions_alignment=ft.MainAxisAlignment.END,
     ))
+
+
+def _dlg_fiado(app, metodo, falta_cup, pagos_state, rebuild,
+               indice_existente=None):
+    """Diálogo específico para el pago Fiado en el POS."""
+    page = app.page
+    carrito = app._carrito_pos
+
+    if indice_existente is not None:
+        p_actual = pagos_state["pagos"][indice_existente]
+        monto_actual = float(p_actual.get("monto") or 0)
+    else:
+        monto_actual = falta_cup
+
+    tf_monto = ft.TextField(
+        label="Monto a fiar (CUP)",
+        value=f"{monto_actual:.2f}",
+        keyboard_type=ft.KeyboardType.NUMBER,
+        autofocus=True,
+        **es.estilo_textfield(12), height=54)
+
+    error_lbl = ft.Text("", color=es.COLOR_PELIGRO, size=12)
+    contenedor_cliente = ft.Container()
+
+    def rebuild_cliente():
+        cid = carrito.get("cliente_id")
+        if cid:
+            c = cli.obtener_cliente(cid)
+            nombre = c["nombre"] if c else "Cliente desconocido"
+            contenedor_cliente.content = ft.Row([
+                ft.Icon(ft.Icons.PERSON, color=es.COLOR_EXITO,
+                        size=20),
+                ft.Column([
+                    ft.Text("Cliente", size=10,
+                            color=es.COLOR_TEXTO_TENUE),
+                    ft.Text(nombre, size=13, color=es.COLOR_TEXTO,
+                            weight=ft.FontWeight.W_600),
+                ], spacing=0, expand=True),
+                ft.TextButton(
+                    "Cambiar",
+                    icon=ft.Icons.SWAP_HORIZ,
+                    on_click=lambda e: _elegir_cliente()),
+            ], spacing=8,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER)
+            contenedor_cliente.bgcolor = es.COLOR_EXITO_SUAVE
+            contenedor_cliente.border = ft.Border.all(1, es.COLOR_EXITO)
+        else:
+            contenedor_cliente.content = ft.Row([
+                ft.Icon(ft.Icons.WARNING_AMBER,
+                        color=es.COLOR_AMBAR, size=20),
+                ft.Text("Sin cliente. Selecciona o crea uno.",
+                        size=12, color=es.COLOR_TEXTO, expand=True),
+                ft.TextButton(
+                    "Elegir",
+                    icon=ft.Icons.PERSON_SEARCH,
+                    on_click=lambda e: _elegir_cliente()),
+            ], spacing=8,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER)
+            contenedor_cliente.bgcolor = es.COLOR_AMBAR_SUAVE
+            contenedor_cliente.border = ft.Border.all(1, es.COLOR_AMBAR)
+        contenedor_cliente.padding = 10
+        contenedor_cliente.border_radius = 10
+        try:
+            contenedor_cliente.update()
+        except Exception:
+            pass
+
+    def _elegir_cliente():
+        _modal_cliente(app, rebuild_cliente)
+
+    rebuild_cliente()
+
+    def guardar(e):
+        error_lbl.value = ""
+        cid = carrito.get("cliente_id")
+        if not cid:
+            error_lbl.value = (
+                "El método Fiado requiere un cliente asociado.")
+            page.update()
+            return
+        try:
+            monto = float((tf_monto.value or "0").replace(",", "."))
+        except ValueError:
+            error_lbl.value = "Monto inválido"
+            page.update()
+            return
+        if monto <= 0:
+            error_lbl.value = "El monto debe ser mayor que 0"
+            page.update()
+            return
+        nuevo = {
+            "metodo": metodo["clave"],
+            "moneda": "CUP",
+            "monto": monto,
+            "tasa": 1.0,
+        }
+        if indice_existente is not None:
+            pagos_state["pagos"][indice_existente] = nuevo
+        else:
+            pagos_state["pagos"].append(nuevo)
+        page.pop_dialog()
+        rebuild()
+
+    titulo = ("Editar pago: Fiado"
+              if indice_existente is not None
+              else "Pago: Fiado")
+
+    page.show_dialog(ft.AlertDialog(
+        title=ft.Text(titulo),
+        content=ft.Column([
+            contenedor_cliente,
+            ft.Container(height=4),
+            ft.Text(f"Saldo pendiente: ${falta_cup:,.2f} CUP",
+                    size=12, color=es.COLOR_TEXTO_SUAVE),
+            tf_monto,
+            error_lbl,
+        ], tight=True, width=380, spacing=10),
+        actions=[
+            ft.TextButton("Cancelar",
+                          on_click=lambda e: page.pop_dialog()),
+            ft.FilledButton("Guardar", on_click=guardar,
+                            style=es.estilo_boton_marca()),
+        ],
+        actions_alignment=ft.MainAxisAlignment.END,
+    ))
+
 
 def _confirmar_venta(app, pagos, on_refresh_lista, on_refresh_carrito):
     page = app.page
@@ -1171,13 +1340,13 @@ def _confirmar_venta(app, pagos, on_refresh_lista, on_refresh_carrito):
     on_refresh_lista()
     on_refresh_carrito()
 
-    page.pop_dialog()  # cerrar cobro
+    page.pop_dialog()
     _mostrar_ticket(app, resultado["orden_id"])
 
 
-# ────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
 # TICKET
-# ────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
 
 def _mostrar_ticket(app, orden_id):
     page = app.page
@@ -1198,7 +1367,6 @@ def _mostrar_ticket(app, orden_id):
             snack(page, f"Error al guardar PNG: {ex}", "error")
 
     def copiar_texto(e):
-        """Copia el ticket en texto plano para pegar en WhatsApp."""
         try:
             txt = tk.texto_plano_ticket(orden_id)
             copiar_portapapeles(page, txt)
@@ -1206,8 +1374,6 @@ def _mostrar_ticket(app, orden_id):
             snack(page, f"Error al copiar: {ex}", "error")
 
     def preparar_envio(e):
-        """Guarda PDF + PNG, copia el texto al portapapeles y muestra
-        dónde están los archivos."""
         try:
             ruta_pdf = tk.guardar_ticket(orden_id, "pdf")
             ruta_png = tk.guardar_ticket(orden_id, "png")
@@ -1302,7 +1468,7 @@ def _mostrar_ticket(app, orden_id):
             ],
             actions_alignment=ft.MainAxisAlignment.END,
         ))
-        
+
     def cerrar(e):
         page.pop_dialog()
         app.ir("/principal")
@@ -1331,4 +1497,4 @@ def _mostrar_ticket(app, orden_id):
         ],
         actions_alignment=ft.MainAxisAlignment.END,
     ))
-
+    
