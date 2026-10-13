@@ -6,6 +6,38 @@ from datetime import datetime, timedelta
 from db import get_conn, GENERAL_ID
 
 
+# ═══════════════════════════════════════════════════════════
+# CONSTANTES COMPARTIDAS
+# ═══════════════════════════════════════════════════════════
+#
+# En este proyecto existen DOS motivos válidos para una venta:
+#
+#   'Venta'  → hardcodeado por el POS (ventas.registrar_venta)
+#   'Combos' → motivo default de la salida manual
+#              (configurable en configuracion.motivo_default_salida)
+#
+# Cualquier query que cuente ventas DEBE incluir ambos, o perderá
+# movimientos. Centralizamos aquí para no repetir la lista.
+
+VENTA_MOTIVOS = ("venta", "combos")
+
+# Fragmento SQL reutilizable. Usa el alias `m` para la tabla movimientos.
+SQL_ES_VENTA = (
+    "LOWER(TRIM(COALESCE(m.motivo,''))) "
+    "IN ('venta','combos')"
+)
+
+# Fragmento SQL: excluye movimientos cuyo detalle apunta a una
+# orden en estado 'anulada'. También requiere alias `m`.
+SQL_NO_ANULADA = """
+NOT EXISTS (
+    SELECT 1 FROM ordenes_venta o
+    WHERE o.estado = 'anulada'
+      AND m.detalle = 'Ticket ' || o.numero_ticket
+)
+"""
+
+
 def rango_calendario(periodo: str) -> tuple[str, str]:
     """
     Devuelve (desde, hasta) en formato 'YYYY-MM-DD HH:MM:SS'.
@@ -36,9 +68,17 @@ def rango_calendario(periodo: str) -> tuple[str, str]:
             hasta.strftime("%Y-%m-%d %H:%M:%S"))
 
 
+# ═══════════════════════════════════════════════════════════
+# RESUMEN DEL DASHBOARD
+# ═══════════════════════════════════════════════════════════
+
 def resumen_periodo(local_id, periodo: str) -> dict:
     """
     Devuelve TODAS las métricas del período en un solo query.
+
+    Cuenta como venta los motivos en VENTA_MOTIVOS ('Venta' del POS
+    y 'Combos' de la salida manual) y excluye movimientos de
+    órdenes ANULADAS.
     """
     desde, hasta = rango_calendario(periodo)
 
@@ -55,13 +95,13 @@ def resumen_periodo(local_id, periodo: str) -> dict:
             AS ingresado,
 
         COALESCE(SUM(CASE WHEN tipo='SALIDA'
-            AND LOWER(TRIM(COALESCE(motivo,''))) = 'venta'
+            AND {SQL_ES_VENTA} AND {SQL_NO_ANULADA}
             THEN (precio_unitario_momento - rebaja) * cantidad
             ELSE 0 END), 0)
             AS vendido,
 
         COALESCE(SUM(CASE WHEN tipo='SALIDA'
-            AND LOWER(TRIM(COALESCE(motivo,''))) = 'venta'
+            AND {SQL_ES_VENTA} AND {SQL_NO_ANULADA}
             THEN precio_costo_momento * cantidad
             ELSE 0 END), 0)
             AS costo_vendido,
@@ -71,12 +111,12 @@ def resumen_periodo(local_id, periodo: str) -> dict:
             THEN cantidad ELSE 0 END), 0) AS cant_entradas,
 
         COUNT(CASE WHEN tipo='SALIDA'
-            AND LOWER(TRIM(COALESCE(motivo,''))) = 'venta'
+            AND {SQL_ES_VENTA} AND {SQL_NO_ANULADA}
             THEN 1 END) AS n_ventas,
         COALESCE(SUM(CASE WHEN tipo='SALIDA'
-            AND LOWER(TRIM(COALESCE(motivo,''))) = 'venta'
+            AND {SQL_ES_VENTA} AND {SQL_NO_ANULADA}
             THEN cantidad ELSE 0 END), 0) AS cant_ventas
-    FROM movimientos
+    FROM movimientos m
     WHERE fecha >= ? AND fecha < ?{filtro}
     """
 
@@ -146,8 +186,7 @@ def top_productos_vendidos(local_id, desde: str, hasta: str,
                             limite: int = 10) -> list[dict]:
     """
     Top N productos por CANTIDAD vendida en el período.
-    Usa `orden_items` (solo órdenes no anuladas) para capturar
-    ventas del POS fielmente.
+    Usa `orden_items` de órdenes no anuladas (POS fiel).
     """
     filtro = ""
     params: list = [desde, hasta]
@@ -213,40 +252,41 @@ def ventas_por_metodo_pago(local_id, desde: str,
 def productos_estancados(local_id, dias: int = 30,
                           limite: int = 15) -> list[dict]:
     """
-    Productos activos con stock > 0 que NO han tenido salida por venta
-    en los últimos `dias`. Ordenados por capital inmovilizado desc.
+    Productos activos con stock > 0 que NO han tenido venta real
+    en los últimos `dias`.
+
+    Venta real = SALIDA con motivo en VENTA_MOTIVOS ('Venta' o
+    'Combos') y que NO pertenezca a una orden anulada.
+
+    Se excluyen motivos de uso interno ('Pantry', nombres de
+    empleados, etc.).
     """
     fecha_limite = (datetime.now() - timedelta(days=dias)).strftime(
         "%Y-%m-%d %H:%M:%S")
 
     filtro = ""
-    params: list = [fecha_limite]
     if local_id is not None and local_id != GENERAL_ID:
         filtro = " AND p.local_id=?"
-        params.append(local_id)
-    params.append(limite)
+        params = [local_id, fecha_limite, limite]
+    else:
+        params = [fecha_limite, limite]
 
     sql = (
         "SELECT p.id, p.nombre, p.codigo, p.stock, "
         "       p.precio_unitario, p.precio_costo "
         "FROM productos p "
         "WHERE p.activo = 1 AND p.stock > 0" + filtro +
-        " AND NOT EXISTS ("
-        "   SELECT 1 FROM movimientos m "
-        "   WHERE m.producto_id = p.id "
-        "     AND m.tipo = 'SALIDA' "
-        "     AND LOWER(TRIM(COALESCE(m.motivo,''))) = 'venta' "
-        "     AND m.fecha >= ? "
-        " ) "
+        f" AND NOT EXISTS ("
+        f"   SELECT 1 FROM movimientos m "
+        f"   WHERE m.producto_id = p.id "
+        f"     AND m.tipo = 'SALIDA' "
+        f"     AND {SQL_ES_VENTA} "
+        f"     AND m.fecha >= ? "
+        f"     AND {SQL_NO_ANULADA}"
+        f" ) "
         "ORDER BY (p.stock * p.precio_costo) DESC "
         "LIMIT ?"
     )
-    # El filtro `local_id` va antes del `?` de fecha_limite en el
-    # subquery, así que reordenamos params:
-    if filtro:
-        params = [local_id, fecha_limite, limite]
-    else:
-        params = [fecha_limite, limite]
 
     with get_conn() as conn:
         rows = conn.execute(sql, tuple(params)).fetchall()
@@ -277,7 +317,9 @@ def productos_stock_critico(local_id, limite: int = 15) -> list[dict]:
     return criticos[:limite]
 
 
-# ── Compatibilidad con código antiguo ──
+# ═══════════════════════════════════════════════════════════
+# Compatibilidad con código antiguo
+# ═══════════════════════════════════════════════════════════
 
 def ingresado_periodo(local_id, desde, hasta) -> float:
     return _one_sum(local_id, desde, hasta,
@@ -338,7 +380,9 @@ def ventas_sin_costo(local_id, desde, hasta) -> int:
         return int(conn.execute(sql, tuple(p)).fetchone()["n"] or 0)
 
 
-# ── Helpers internos ──
+# ═══════════════════════════════════════════════════════════
+# Helpers internos
+# ═══════════════════════════════════════════════════════════
 
 def _filtro(local_id, desde, hasta):
     if local_id is None or local_id == GENERAL_ID:

@@ -929,6 +929,72 @@ def test_resumen_periodo():
     assert "ganancia" in r
     assert "n_ventas" in r
 
+def test_estancados_no_solapa_con_vendidos():
+    """
+    INVARIANTE: ningún producto con venta reciente (motivo 'Venta'
+    o 'Combos', orden no anulada) debe aparecer como estancado.
+    """
+    a = loc.obtener_almacen()
+    estancados = met.productos_estancados(a["id"], dias=30,
+                                            limite=9999)
+    estancados_ids = {p["id"] for p in estancados}
+
+    fecha_limite = (
+        datetime.now() - timedelta(days=30)
+    ).strftime("%Y-%m-%d %H:%M:%S")
+
+    with get_conn() as conn:
+        vendidos = conn.execute(f"""
+            SELECT DISTINCT m.producto_id
+            FROM movimientos m
+            WHERE m.tipo='SALIDA'
+              AND {met.SQL_ES_VENTA}
+              AND m.fecha >= ?
+              AND {met.SQL_NO_ANULADA}
+        """, (fecha_limite,)).fetchall()
+    vendidos_ids = {r["producto_id"] for r in vendidos}
+
+    solap = estancados_ids & vendidos_ids
+    assert not solap, (
+        f"Solapamiento estancados↔vendidos: {solap}")
+
+
+def test_todos_los_activos_clasificados():
+    """
+    Todo producto activo con stock > 0 debe estar o en la lista
+    de vendidos recientes o en la de estancados. Si no está en
+    ninguna, hay un bug.
+    """
+    a = loc.obtener_almacen()
+    estancados = met.productos_estancados(a["id"], dias=30,
+                                            limite=9999)
+    estancados_ids = {p["id"] for p in estancados}
+
+    fecha_limite = (
+        datetime.now() - timedelta(days=30)
+    ).strftime("%Y-%m-%d %H:%M:%S")
+
+    with get_conn() as conn:
+        todos = conn.execute("""
+            SELECT id FROM productos
+            WHERE activo=1 AND stock > 0 AND local_id=?
+        """, (a["id"],)).fetchall()
+        todos_ids = {r["id"] for r in todos}
+
+        vendidos = conn.execute(f"""
+            SELECT DISTINCT m.producto_id
+            FROM movimientos m
+            WHERE m.tipo='SALIDA'
+              AND {met.SQL_ES_VENTA}
+              AND m.fecha >= ?
+              AND {met.SQL_NO_ANULADA}
+        """, (fecha_limite,)).fetchall()
+    vendidos_ids = {r["producto_id"] for r in vendidos}
+
+    sin_clasificar = todos_ids - estancados_ids - vendidos_ids
+    assert not sin_clasificar, (
+        f"Productos sin clasificar: {sin_clasificar}")
+
 
 # ═══════════════════════════════════════════════════════════
 # CLIENTES
@@ -3047,6 +3113,8 @@ TESTS = [
     ("Rango año",                       test_rango_anio),
     ("Rango total",                     test_rango_total),
     ("Resumen período",                 test_resumen_periodo),
+    ("Estancados no solapa con vendidos", test_estancados_no_solapa_con_vendidos),
+    ("Todos los activos clasificados",    test_todos_los_activos_clasificados),
     # Clientes
     ("Crear cliente",                   test_crear_cliente),
     ("Cliente duplicado",               test_cliente_duplicado),
