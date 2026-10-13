@@ -839,7 +839,7 @@ def agregar_pago_a_orden(orden_id, metodo, moneda, monto, usuario):
                 f"Ya existe un pago con «{metodo}» en esta orden. "
                 f"Edita o elimina el existente antes de agregar otro.")
 
-        _p, _a, pagado = _calcular_pagado(conn, orden_id)
+        pagado = _calcular_pagado(conn, orden_id)
         total = float(o["total"] or 0)
         saldo = max(0.0, total - pagado)
 
