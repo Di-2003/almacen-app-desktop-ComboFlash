@@ -4,20 +4,18 @@ Carrito vive en memoria (app._carrito_pos) hasta confirmar.
 
 FIX 1 (POS ↔ Historial):
   - editar_items_orden regenera los movimientos de la orden.
-  - Se expone `recalcular_orden_completa(conn, orden_id)` para que
-    `inventario.editar_movimiento` pueda sincronizar la orden cuando
-    el cambio viene desde el Historial.
+  - Se expone `recalcular_orden_completa(conn, orden_id)`.
 
-FIX 2 (vuelto solo con efectivo):
-  Al registrar una venta, si el total pagado supera el total de la
-  orden (hay vuelto), ese sobrante NO puede superar el efectivo
-  recibido. Los métodos electrónicos (Tarjeta, Transfermóvil,
-  Enzona, Zelle) no admiten vuelto porque no se puede devolver
-  físicamente. Si el sobrante viene de un no-efectivo, se rechaza.
+FIX 2 (vuelto solo con efectivo, sin casos corner):
+  · Efectivo (cualquier moneda): admite exceso → vuelto.
+  · Fiado: monto ≤ saldo pendiente. Se recorta al saldo si
+    excede por ruido de redondeo (≤ 0.01 CUP).
+  · No-efectivo (Tarjeta, Transfermóvil, Enzona, Zelle):
+    monto ≤ saldo pendiente. Se recorta al saldo si excede por
+    ruido de redondeo (≤ 0.01 CUP). No genera vuelto nunca.
 
-NOTA: el motivo por defecto de los movimientos SALIDA generados por
-el POS es `_MOTIVO_VENTA_POS` (hoy "Combos"). Si lo cambias, también
-ajusta `inventario._MOTIVOS_VENTA` para que acepte el nuevo valor.
+El motivo por defecto de los movimientos SALIDA es
+`_MOTIVO_VENTA_POS` (hoy "Combos").
 """
 from datetime import datetime
 from db import get_conn, GENERAL_ID, MONEDAS_VALIDAS
@@ -29,6 +27,10 @@ from clientes import obtener_cliente
 # CONSTANTES
 # ═══════════════════════════════════════════════════════════
 _MOTIVO_VENTA_POS = "Combos"
+
+# Margen para recortar automáticamente cuando monto × tasa
+# excede el saldo pendiente por ruido de redondeo.
+_MARGEN_RECORTE_CUP = 0.01
 
 
 def _ahora() -> str:
@@ -207,11 +209,13 @@ def registrar_venta(carrito, pagos, usuario, local_id,
     from configuracion_negocio import (
         obtener_metodo_pago, moneda_efectiva_metodo,
     )
-    total_pagado_cup = 0.0
-    efectivo_pagado_cup = 0.0
+
+    saldo_restante = total_cup
     pagos_proc = []
     hay_fiado = False
-    pagos_no_fiado_cup = 0.0
+    efectivo_cup = 0.0
+    no_efectivo_cup = 0.0
+
     for p in pagos:
         metodo = (p.get("metodo") or "").strip()
         if not metodo:
@@ -235,51 +239,74 @@ def registrar_venta(carrito, pagos, usuario, local_id,
         if tasa is None:
             tasa = inv.get_tasa(moneda)
         tasa = float(tasa)
-        monto_cup = monto * tasa
-        total_pagado_cup += monto_cup
+        monto_cup_bruto = monto * tasa
 
         es_efectivo = m_conf.get("clave") == "Efectivo"
-        if es_efectivo:
-            efectivo_pagado_cup += monto_cup
+        es_credito = bool(m_conf.get("es_credito"))
 
-        if m_conf.get("es_credito"):
+        if es_credito:
+            # ── Fiado: no puede exceder el saldo pendiente ──
+            if monto_cup_bruto > saldo_restante + _MARGEN_RECORTE_CUP:
+                raise ValueError(
+                    f"El monto del Fiado ({monto_cup_bruto:.2f} CUP) "
+                    f"supera el saldo pendiente "
+                    f"({saldo_restante:.2f} CUP)."
+                )
+            # Recorte por ruido de redondeo
+            if abs(monto_cup_bruto - saldo_restante) <= _MARGEN_RECORTE_CUP:
+                monto_cup = saldo_restante
+            else:
+                monto_cup = monto_cup_bruto
             hay_fiado = True
+        elif es_efectivo:
+            # ── Efectivo: puede exceder (vuelto) ──
+            monto_cup = monto_cup_bruto
+            efectivo_cup += monto_cup
         else:
-            pagos_no_fiado_cup += monto_cup
+            # ── No-efectivo: no puede exceder el saldo ──
+            if monto_cup_bruto > saldo_restante + _MARGEN_RECORTE_CUP:
+                raise ValueError(
+                    f"El monto ({monto_cup_bruto:.2f} CUP) supera "
+                    f"el saldo pendiente ({saldo_restante:.2f} CUP). "
+                    f"Ajusta el monto del pago."
+                )
+            if abs(monto_cup_bruto - saldo_restante) <= _MARGEN_RECORTE_CUP:
+                monto_cup = saldo_restante
+            else:
+                monto_cup = monto_cup_bruto
+            no_efectivo_cup += monto_cup
+
+        saldo_restante -= monto_cup
 
         pagos_proc.append({
-            "metodo": metodo, "moneda": moneda, "monto": monto,
-            "tasa": tasa, "monto_cup": monto_cup,
+            "metodo": metodo,
+            "moneda": moneda,
+            "monto": monto,
+            "tasa": tasa,
+            "monto_cup": monto_cup,
             "es_efectivo": es_efectivo,
+            "es_credito": es_credito,
         })
 
-    if total_pagado_cup + 0.01 < total_cup:
-        raise ValueError(
-            f"Los pagos ({total_pagado_cup:.2f} CUP) no cubren el "
-            f"total ({total_cup:.2f} CUP)"
-        )
+    total_cobrado_cup = efectivo_cup + no_efectivo_cup
 
-    vuelto_cup = max(0.0, total_pagado_cup - total_cup)
-
-    # ── FIX 2: el vuelto solo puede salir del efectivo recibido ──
-    if vuelto_cup > 0.01:
-        if vuelto_cup > efectivo_pagado_cup + 0.01:
+    # Validación global: sin Fiado, los cobros deben cubrir el total
+    if not hay_fiado:
+        if total_cobrado_cup + 0.01 < total_cup:
             raise ValueError(
-                f"El vuelto (${vuelto_cup:,.2f} CUP) supera el "
-                f"efectivo recibido (${efectivo_pagado_cup:,.2f} CUP). "
-                f"Los métodos electrónicos no admiten vuelto. "
-                f"Ajusta el monto del pago o usa Efectivo."
+                f"Los pagos ({total_cobrado_cup:.2f} CUP) no cubren "
+                f"el total ({total_cup:.2f} CUP)"
             )
 
-    if hay_fiado and not cliente_id:
-        raise ValueError(
-            "Una venta con «Fiado» requiere un cliente asociado")
+    # Vuelto: solo puede provenir de exceso de efectivo
+    vuelto_cup = max(0.0, total_cobrado_cup - total_cup)
 
     if hay_fiado:
-        saldo_pendiente = max(0.0, total_cup - pagos_no_fiado_cup)
+        saldo_pendiente = max(0.0, total_cup - total_cobrado_cup)
         if saldo_pendiente <= 0.01:
+            saldo_pendiente = 0.0
             estado = "pagada"
-        elif pagos_no_fiado_cup > 0.01:
+        elif total_cobrado_cup > 0.01:
             estado = "parcial"
         else:
             estado = "pendiente"
@@ -498,10 +525,6 @@ def totales_periodo(local_id, desde, hasta) -> dict:
 # ═══════════════════════════════════════════════════════════
 
 def _calcular_pagado(conn, orden_id) -> float:
-    """
-    Cobrado real = pagos NO crédito + abonos.
-    El Fiado NO cuenta como cobro (es deuda).
-    """
     p = conn.execute(
         "SELECT COALESCE(SUM(p.monto_cup),0) AS t FROM pagos p "
         "JOIN metodos_pago m ON m.clave=p.metodo "
@@ -515,10 +538,6 @@ def _calcular_pagado(conn, orden_id) -> float:
 
 
 def _sincronizar_pago_fiado(conn, orden_id, saldo_nuevo):
-    """
-    Ajusta el monto del pago Fiado para que refleje el saldo
-    pendiente actual. Si el saldo es 0, elimina el pago Fiado.
-    """
     pago_fiado = conn.execute(
         "SELECT p.* FROM pagos p "
         "JOIN metodos_pago m ON m.clave=p.metodo "
@@ -541,10 +560,6 @@ def _sincronizar_pago_fiado(conn, orden_id, saldo_nuevo):
 
 
 def _recalcular_estado_orden(conn, orden_id):
-    """
-    Recalcula estado, saldo y vuelto + sincroniza el Fiado.
-    Asume que `subtotal` y `total` de la orden ya están actualizados.
-    """
     o = conn.execute(
         "SELECT * FROM ordenes_venta WHERE id=?", (orden_id,)
     ).fetchone()
@@ -573,13 +588,6 @@ def _recalcular_estado_orden(conn, orden_id):
 
 
 def recalcular_orden_completa(conn, orden_id):
-    """
-    Recalcula subtotal, descuento_global, total, saldo, estado y
-    sincroniza el pago Fiado a partir de los items actuales.
-
-    Se usa desde `inventario.editar_movimiento` cuando el cambio
-    viene del Historial (no del POS).
-    """
     o = conn.execute(
         "SELECT * FROM ordenes_venta WHERE id=?", (orden_id,)
     ).fetchone()
@@ -616,13 +624,6 @@ def recalcular_orden_completa(conn, orden_id):
 
 
 def editar_items_orden(orden_id, items_nuevos, usuario, fecha=None):
-    """
-    Reemplaza los items de una orden existente.
-    Recalcula total, saldo y stock. Mantiene pagos y abonos ya hechos.
-
-    IMPORTANTE: los movimientos nuevos se crean con la FECHA ORIGINAL
-    de la orden, no con la fecha de edición.
-    """
     username = _username(usuario)
     if not items_nuevos:
         raise ValueError("La orden debe tener al menos un ítem")
@@ -809,10 +810,6 @@ def editar_items_orden(orden_id, items_nuevos, usuario, fecha=None):
 
 def editar_pago(pago_id, nuevo_metodo, nueva_moneda=None,
                 usuario=None):
-    """
-    Edita un pago existente: SOLO método y moneda.
-    El monto se recalcula para preservar el monto_cup original.
-    """
     from configuracion_negocio import (
         obtener_metodo_pago, moneda_efectiva_metodo,
     )
@@ -872,15 +869,6 @@ def editar_pago(pago_id, nuevo_metodo, nueva_moneda=None,
 
 
 def agregar_pago_a_orden(orden_id, metodo, moneda, monto, usuario):
-    """
-    Añade un pago NUEVO a una orden ya registrada.
-
-    Reglas:
-      - Bloquea duplicados del mismo método.
-      - Fiado: monto <= saldo pendiente (no puede sobrar).
-      - No-Efectivo: monto <= saldo pendiente.
-      - Efectivo: puede exceder (para vuelto).
-    """
     from configuracion_negocio import (
         obtener_metodo_pago, moneda_efectiva_metodo,
     )
@@ -925,22 +913,30 @@ def agregar_pago_a_orden(orden_id, metodo, moneda, monto, usuario):
         saldo = max(0.0, total - pagado)
 
         tasa = inv.get_tasa(moneda)
-        monto_cup = monto * tasa
+        monto_cup_bruto = monto * tasa
 
         es_credito = bool(m.get("es_credito"))
         es_efectivo = m.get("clave") == "Efectivo"
 
         if es_credito:
-            if monto_cup > saldo + 0.01:
+            if monto_cup_bruto > saldo + _MARGEN_RECORTE_CUP:
                 raise ValueError(
-                    f"El monto del Fiado ({monto_cup:.2f} CUP) supera "
-                    f"el saldo pendiente ({saldo:.2f} CUP).")
+                    f"El monto del Fiado ({monto_cup_bruto:.2f} CUP) "
+                    f"supera el saldo pendiente ({saldo:.2f} CUP).")
+            monto_cup = (saldo
+                         if abs(monto_cup_bruto - saldo) <= _MARGEN_RECORTE_CUP
+                         else monto_cup_bruto)
         elif not es_efectivo:
-            if monto_cup > saldo + 0.01:
+            if monto_cup_bruto > saldo + _MARGEN_RECORTE_CUP:
                 raise ValueError(
-                    f"El monto ({monto_cup:.2f} CUP) supera el saldo "
-                    f"pendiente ({saldo:.2f} CUP). "
+                    f"El monto ({monto_cup_bruto:.2f} CUP) supera el "
+                    f"saldo pendiente ({saldo:.2f} CUP). "
                     f"Si necesitas dar vuelto, usa Efectivo.")
+            monto_cup = (saldo
+                         if abs(monto_cup_bruto - saldo) <= _MARGEN_RECORTE_CUP
+                         else monto_cup_bruto)
+        else:
+            monto_cup = monto_cup_bruto
 
         cur = conn.execute(
             "INSERT INTO pagos(orden_id,metodo,moneda,monto,tasa,"
@@ -958,7 +954,6 @@ def agregar_pago_a_orden(orden_id, metodo, moneda, monto, usuario):
 
 
 def eliminar_pago(pago_id, usuario):
-    """Elimina un pago y recalcula el estado de la orden."""
     with get_conn() as conn:
         p = conn.execute(
             "SELECT * FROM pagos WHERE id=?", (pago_id,)
@@ -980,12 +975,32 @@ def eliminar_pago(pago_id, usuario):
 
 
 def cambiar_metodo_pago(pago_id, nuevo_metodo, usuario):
-    """Wrapper viejo → editar_pago."""
     return editar_pago(pago_id=pago_id, nuevo_metodo=nuevo_metodo,
                        usuario=usuario)
 
 
 def set_cliente_orden(orden_id, cliente_id, usuario=None):
+    with get_conn() as conn:
+        o = conn.execute(
+            "SELECT * FROM ordenes_venta WHERE id=?", (orden_id,)
+        ).fetchone()
+        if o is None:
+            raise ValueError("Orden no encontrada")
+        if o["estado"] == "anulada":
+            raise ValueError("No se puede editar una orden anulada")
+        if o["estado"] == "devuelta":
+            raise ValueError("No se puede editar una orden devuelta")
+        if cliente_id is not None:
+            c = conn.execute(
+                "SELECT 1 FROM clientes WHERE id=? AND activo=1",
+                (cliente_id,)
+            ).fetchone()
+            if c is None:
+                raise ValueError("Cliente no encontrado o inactivo")
+        conn.execute(
+            "UPDATE ordenes_venta SET cliente_id=? WHERE id=?",
+            (cliente_id, orden_id)
+        )
     """Actualiza el cliente asociado a una orden existente."""
     with get_conn() as conn:
         o = conn.execute(
