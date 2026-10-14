@@ -290,6 +290,16 @@ def registrar_venta(carrito, pagos, usuario, local_id,
 
     total_cobrado_cup = efectivo_cup + no_efectivo_cup
 
+    # Fiado requiere cliente asociado
+    if hay_fiado and not cliente_id:
+        raise ValueError(
+            "Una venta con «Fiado» requiere un cliente asociado")
+
+    # Fiado requiere cliente asociado
+    if hay_fiado and not cliente_id:
+        raise ValueError(
+            "Una venta con «Fiado» requiere un cliente asociado")
+
     # Validación global: sin Fiado, los cobros deben cubrir el total
     if not hay_fiado:
         if total_cobrado_cup + 0.01 < total_cup:
