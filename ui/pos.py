@@ -5,6 +5,14 @@ POS — Nueva Venta.
 - Carrito en bottom sheet con edición, cliente, descuento global.
 - Modal de cobro con hasta 3 pagos y pago mixto.
 - Al confirmar: registra venta + muestra ticket para compartir.
+
+FIX (bottom sheet de cobro):
+  El sheet de cobro se reestructura en DOS zonas para evitar scroll
+  anidado y garantizar que los botones "+ Agregar pago" y "Confirmar
+  venta" siempre estén visibles y clicables:
+    · Zona scrolleable: lista de pagos + resumen de totales.
+    · Zona fija: botones, anclados abajo.
+  Se introduce `_bottom_sheet_cobro`, que NO anida scroll.
 """
 import flet as ft
 import math
@@ -816,11 +824,51 @@ def _fila_total(label, valor, color=None, grande=False):
 
 
 # ═══════════════════════════════════════════════════════════
+# BOTTOM SHEET DE COBRO (dos zonas: scroll + fija)
+# ═══════════════════════════════════════════════════════════
+
+def _bottom_sheet_cobro(contenido, page, alto_max_pct=0.92):
+    """
+    BottomSheet pensado para contenido con expand=True.
+    NO anida scroll: solo el contenido decide dónde scrollea.
+    """
+    h = None
+    try:
+        hh = getattr(page, "height", None)
+        if not hh:
+            w = getattr(page, "window", None)
+            if w is not None:
+                hh = getattr(w, "height", None)
+        if hh:
+            h = int(hh * alto_max_pct)
+    except Exception:
+        pass
+
+    cont = ft.Container(
+        content=contenido,
+        padding=ft.Padding.only(left=16, top=10, right=16, bottom=20),
+        bgcolor=es.COLOR_SUPERFICIE,
+        border_radius=ft.BorderRadius.only(top_left=20, top_right=20),
+    )
+    if h:
+        cont.height = h
+    return ft.BottomSheet(content=cont)
+
+
+# ═══════════════════════════════════════════════════════════
 # COBRO
 # ═══════════════════════════════════════════════════════════
 
 def _abrir_cobro(app, bs_carrito, rebuild_carrito,
                  on_refresh_lista, on_refresh_carrito):
+    """
+    Sheet de cobro con DOS zonas:
+      · Zona scrolleable: lista de pagos + resumen.
+      · Zona fija: botones "+ Agregar pago" y "Confirmar venta".
+
+    Evita el scroll anidado y garantiza que los botones siempre
+    estén visibles y clicables.
+    """
     page = app.page
     if bs_carrito is not None:
         try:
@@ -837,13 +885,20 @@ def _abrir_cobro(app, bs_carrito, rebuild_carrito,
         return
 
     pagos_state = {"pagos": []}
-    contenido_col = ft.Column(spacing=8, tight=True)
+
+    # ── Zona scrolleable (lista + resumen) ──
+    zona_scroll = ft.Column(spacing=8, tight=True,
+                             scroll=ft.ScrollMode.AUTO)
+    # ── Zona fija (botones) ──
+    zona_fija = ft.Column(spacing=8, tight=True)
 
     def rebuild():
-        contenido_col.controls.clear()
+        zona_scroll.controls.clear()
+        zona_fija.controls.clear()
 
+        # ── Lista de pagos ──
         if not pagos_state["pagos"]:
-            contenido_col.controls.append(ft.Container(
+            zona_scroll.controls.append(ft.Container(
                 content=ft.Text("Sin pagos todavía. Agrega uno abajo.",
                                 size=12,
                                 color=es.COLOR_TEXTO_SUAVE),
@@ -853,7 +908,7 @@ def _abrir_cobro(app, bs_carrito, rebuild_carrito,
             ))
         else:
             for i, p in enumerate(pagos_state["pagos"]):
-                contenido_col.controls.append(_fila_pago(
+                zona_scroll.controls.append(_fila_pago(
                     app, i, p, pagos_state, rebuild, tot))
 
         total_pagado_cup = sum(
@@ -863,7 +918,8 @@ def _abrir_cobro(app, bs_carrito, rebuild_carrito,
         color_falta = (es.COLOR_EXITO if falta <= 0.01
                        else es.COLOR_PELIGRO)
 
-        contenido_col.controls.append(ft.Container(
+        # ── Resumen ──
+        zona_scroll.controls.append(ft.Container(
             content=ft.Column([
                 _fila_total("Total venta", f"${tot['total']:,.2f}"),
                 _fila_total("Pagado",
@@ -879,8 +935,9 @@ def _abrir_cobro(app, bs_carrito, rebuild_carrito,
             border_radius=12,
         ))
 
+        # ── Botones (fijos, fuera del scroll) ──
         puede_agregar = len(pagos_state["pagos"]) < 3
-        contenido_col.controls.append(ft.FilledButton(
+        zona_fija.controls.append(ft.FilledButton(
             f"+ Agregar pago ({3 - len(pagos_state['pagos'])} restantes)",
             icon=ft.Icons.ADD,
             disabled=not puede_agregar,
@@ -895,7 +952,7 @@ def _abrir_cobro(app, bs_carrito, rebuild_carrito,
         ))
 
         confirmar_ok = (falta <= 0.01 and len(pagos_state["pagos"]) > 0)
-        contenido_col.controls.append(ft.FilledButton(
+        zona_fija.controls.append(ft.FilledButton(
             "Confirmar venta",
             icon=ft.Icons.CHECK_CIRCLE,
             disabled=not confirmar_ok,
@@ -909,19 +966,29 @@ def _abrir_cobro(app, bs_carrito, rebuild_carrito,
                     radius=ft.BorderRadius.all(12))),
         ))
 
-        if mounted(contenido_col):
-            contenido_col.update()
+        if mounted(zona_scroll):
+            zona_scroll.update()
+        if mounted(zona_fija):
+            zona_fija.update()
 
     rebuild()
 
-    page.show_dialog(bottom_sheet(
-        ft.Column([
-            ft.Text("Cobrar", size=18,
-                    weight=ft.FontWeight.BOLD, color=es.COLOR_TEXTO),
-            ft.Container(height=4),
-            contenido_col,
-        ], spacing=6, tight=True, scroll=ft.ScrollMode.AUTO),
-        page=page, alto_max_pct=0.92))
+    # Contenido: título + zona scroll (expand) + divisor + zona fija
+    contenido = ft.Column([
+        ft.Text("Cobrar", size=18,
+                weight=ft.FontWeight.BOLD, color=es.COLOR_TEXTO),
+        ft.Container(height=4),
+        ft.Container(
+            content=zona_scroll,
+            expand=True,
+            alignment=ft.Alignment.TOP_LEFT,
+        ),
+        ft.Divider(height=1, color=es.COLOR_BORDE),
+        zona_fija,
+    ], spacing=6, expand=True)
+
+    page.show_dialog(_bottom_sheet_cobro(contenido, page=page,
+                                         alto_max_pct=0.92))
 
 
 def _fila_pago(app, idx, p, pagos_state, rebuild, tot):
@@ -1497,4 +1564,4 @@ def _mostrar_ticket(app, orden_id):
         ],
         actions_alignment=ft.MainAxisAlignment.END,
     ))
-    
+
