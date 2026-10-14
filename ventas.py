@@ -8,6 +8,13 @@ FIX 1 (POS ↔ Historial):
     `inventario.editar_movimiento` pueda sincronizar la orden cuando
     el cambio viene desde el Historial.
 
+FIX 2 (vuelto solo con efectivo):
+  Al registrar una venta, si el total pagado supera el total de la
+  orden (hay vuelto), ese sobrante NO puede superar el efectivo
+  recibido. Los métodos electrónicos (Tarjeta, Transfermóvil,
+  Enzona, Zelle) no admiten vuelto porque no se puede devolver
+  físicamente. Si el sobrante viene de un no-efectivo, se rechaza.
+
 NOTA: el motivo por defecto de los movimientos SALIDA generados por
 el POS es `_MOTIVO_VENTA_POS` (hoy "Combos"). Si lo cambias, también
 ajusta `inventario._MOTIVOS_VENTA` para que acepte el nuevo valor.
@@ -21,9 +28,6 @@ from clientes import obtener_cliente
 # ═══════════════════════════════════════════════════════════
 # CONSTANTES
 # ═══════════════════════════════════════════════════════════
-# Motivo que se guarda en `movimientos.motivo` para las SALIDAS
-# generadas por el POS. Debe coincidir con lo que reconoce
-# `inventario._MOTIVOS_VENTA` y con `excel_sync.VENTA_MOTIVOS`.
 _MOTIVO_VENTA_POS = "Combos"
 
 
@@ -204,6 +208,7 @@ def registrar_venta(carrito, pagos, usuario, local_id,
         obtener_metodo_pago, moneda_efectiva_metodo,
     )
     total_pagado_cup = 0.0
+    efectivo_pagado_cup = 0.0
     pagos_proc = []
     hay_fiado = False
     pagos_no_fiado_cup = 0.0
@@ -232,13 +237,20 @@ def registrar_venta(carrito, pagos, usuario, local_id,
         tasa = float(tasa)
         monto_cup = monto * tasa
         total_pagado_cup += monto_cup
+
+        es_efectivo = m_conf.get("clave") == "Efectivo"
+        if es_efectivo:
+            efectivo_pagado_cup += monto_cup
+
         if m_conf.get("es_credito"):
             hay_fiado = True
         else:
             pagos_no_fiado_cup += monto_cup
+
         pagos_proc.append({
             "metodo": metodo, "moneda": moneda, "monto": monto,
             "tasa": tasa, "monto_cup": monto_cup,
+            "es_efectivo": es_efectivo,
         })
 
     if total_pagado_cup + 0.01 < total_cup:
@@ -248,6 +260,16 @@ def registrar_venta(carrito, pagos, usuario, local_id,
         )
 
     vuelto_cup = max(0.0, total_pagado_cup - total_cup)
+
+    # ── FIX 2: el vuelto solo puede salir del efectivo recibido ──
+    if vuelto_cup > 0.01:
+        if vuelto_cup > efectivo_pagado_cup + 0.01:
+            raise ValueError(
+                f"El vuelto (${vuelto_cup:,.2f} CUP) supera el "
+                f"efectivo recibido (${efectivo_pagado_cup:,.2f} CUP). "
+                f"Los métodos electrónicos no admiten vuelto. "
+                f"Ajusta el monto del pago o usa Efectivo."
+            )
 
     if hay_fiado and not cliente_id:
         raise ValueError(
@@ -557,10 +579,6 @@ def recalcular_orden_completa(conn, orden_id):
 
     Se usa desde `inventario.editar_movimiento` cuando el cambio
     viene del Historial (no del POS).
-
-    Respeta el % de descuento global original: reconstruye el
-    porcentaje a partir del subtotal y descuento previos, y lo
-    vuelve a aplicar al nuevo subtotal.
     """
     o = conn.execute(
         "SELECT * FROM ordenes_venta WHERE id=?", (orden_id,)
@@ -581,7 +599,6 @@ def recalcular_orden_completa(conn, orden_id):
         reb = float(it["rebaja"] or 0)
         subtotal += (pu - reb) * cant
 
-    # Reconstruir el % de descuento global original
     sub_orig = float(o["subtotal"] or 0)
     desc_orig = float(o["descuento_global"] or 0)
     desc_pct = (desc_orig / sub_orig * 100.0) if sub_orig > 0 else 0.0
@@ -623,7 +640,6 @@ def editar_items_orden(orden_id, items_nuevos, usuario, fecha=None):
 
         fecha = fecha or o["fecha"]
 
-        # ── Validar que la orden no quede sin pagos/abonos ──
         n_pagos_reales = conn.execute(
             "SELECT COUNT(*) AS n FROM pagos p "
             "JOIN metodos_pago m ON m.clave=p.metodo "
@@ -648,7 +664,6 @@ def editar_items_orden(orden_id, items_nuevos, usuario, fecha=None):
                     "fecha_ultima_mod=? WHERE id=?",
                     (it["cantidad"], fecha, it["producto_id"]))
 
-        # Borrar movimientos viejos de esta orden (motivo venta/combos)
         conn.execute(
             "DELETE FROM movimientos WHERE tipo='SALIDA' "
             "AND LOWER(TRIM(COALESCE(motivo,''))) IN "
@@ -682,7 +697,6 @@ def editar_items_orden(orden_id, items_nuevos, usuario, fecha=None):
         descuento_total = subtotal * (desc_pct / 100.0)
         total_nuevo = round(subtotal - descuento_total, 2)
 
-        # ── Validar coherencia pagos↔total ──
         pagos_no_efectivo_no_credito = conn.execute(
             "SELECT COALESCE(SUM(p.monto_cup),0) AS t FROM pagos p "
             "JOIN metodos_pago m ON m.clave=p.metodo "
@@ -995,4 +1009,3 @@ def set_cliente_orden(orden_id, cliente_id, usuario=None):
             (cliente_id, orden_id)
         )
         
-
