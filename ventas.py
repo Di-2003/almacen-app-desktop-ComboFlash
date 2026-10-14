@@ -1,11 +1,30 @@
 """
 Lógica del POS: carrito, venta, descuentos, pagos, ticket.
 Carrito vive en memoria (app._carrito_pos) hasta confirmar.
+
+FIX 1 (POS ↔ Historial):
+  - editar_items_orden regenera los movimientos de la orden.
+  - Se expone `recalcular_orden_completa(conn, orden_id)` para que
+    `inventario.editar_movimiento` pueda sincronizar la orden cuando
+    el cambio viene desde el Historial.
+
+NOTA: el motivo por defecto de los movimientos SALIDA generados por
+el POS es `_MOTIVO_VENTA_POS` (hoy "Combos"). Si lo cambias, también
+ajusta `inventario._MOTIVOS_VENTA` para que acepte el nuevo valor.
 """
 from datetime import datetime
 from db import get_conn, GENERAL_ID, MONEDAS_VALIDAS
 import inventario as inv
 from clientes import obtener_cliente
+
+
+# ═══════════════════════════════════════════════════════════
+# CONSTANTES
+# ═══════════════════════════════════════════════════════════
+# Motivo que se guarda en `movimientos.motivo` para las SALIDAS
+# generadas por el POS. Debe coincidir con lo que reconoce
+# `inventario._MOTIVOS_VENTA` y con `excel_sync.VENTA_MOTIVOS`.
+_MOTIVO_VENTA_POS = "Combos"
 
 
 def _ahora() -> str:
@@ -305,7 +324,7 @@ def registrar_venta(carrito, pagos, usuario, local_id,
                 "fecha,usuario) "
                 "VALUES(?,?,'SALIDA',?,?,?,?,?,?,?,?)",
                 (local_id, it["producto_id"], it["cantidad"],
-                 "Venta", f"Ticket {numero_ticket}",
+                 _MOTIVO_VENTA_POS, f"Ticket {numero_ticket}",
                  rebaja_total_unit, float(it["precio"]),
                  float(prod["precio_costo"] or 0), fecha, username)
             )
@@ -502,6 +521,7 @@ def _sincronizar_pago_fiado(conn, orden_id, saldo_nuevo):
 def _recalcular_estado_orden(conn, orden_id):
     """
     Recalcula estado, saldo y vuelto + sincroniza el Fiado.
+    Asume que `subtotal` y `total` de la orden ya están actualizados.
     """
     o = conn.execute(
         "SELECT * FROM ordenes_venta WHERE id=?", (orden_id,)
@@ -530,14 +550,61 @@ def _recalcular_estado_orden(conn, orden_id):
     )
 
 
+def recalcular_orden_completa(conn, orden_id):
+    """
+    Recalcula subtotal, descuento_global, total, saldo, estado y
+    sincroniza el pago Fiado a partir de los items actuales.
+
+    Se usa desde `inventario.editar_movimiento` cuando el cambio
+    viene del Historial (no del POS).
+
+    Respeta el % de descuento global original: reconstruye el
+    porcentaje a partir del subtotal y descuento previos, y lo
+    vuelve a aplicar al nuevo subtotal.
+    """
+    o = conn.execute(
+        "SELECT * FROM ordenes_venta WHERE id=?", (orden_id,)
+    ).fetchone()
+    if o is None or o["estado"] in ("anulada", "devuelta"):
+        return
+
+    items = conn.execute(
+        "SELECT cantidad, precio_unitario, rebaja "
+        "FROM orden_items WHERE orden_id=?",
+        (orden_id,)
+    ).fetchall()
+
+    subtotal = 0.0
+    for it in items:
+        cant = float(it["cantidad"] or 0)
+        pu = float(it["precio_unitario"] or 0)
+        reb = float(it["rebaja"] or 0)
+        subtotal += (pu - reb) * cant
+
+    # Reconstruir el % de descuento global original
+    sub_orig = float(o["subtotal"] or 0)
+    desc_orig = float(o["descuento_global"] or 0)
+    desc_pct = (desc_orig / sub_orig * 100.0) if sub_orig > 0 else 0.0
+    descuento_total = subtotal * (desc_pct / 100.0)
+    total_nuevo = max(0.0, round(subtotal - descuento_total, 2))
+
+    conn.execute(
+        "UPDATE ordenes_venta SET subtotal=?, descuento_global=?, "
+        "total=? WHERE id=?",
+        (round(subtotal, 2), round(descuento_total, 2),
+         total_nuevo, orden_id)
+    )
+
+    _recalcular_estado_orden(conn, orden_id)
+
+
 def editar_items_orden(orden_id, items_nuevos, usuario, fecha=None):
     """
     Reemplaza los items de una orden existente.
     Recalcula total, saldo y stock. Mantiene pagos y abonos ya hechos.
 
     IMPORTANTE: los movimientos nuevos se crean con la FECHA ORIGINAL
-    de la orden, no con la fecha de edición, para que el Historial y
-    los Excel reflejen cuándo se hizo realmente la venta.
+    de la orden, no con la fecha de edición.
     """
     username = _username(usuario)
     if not items_nuevos:
@@ -554,11 +621,9 @@ def editar_items_orden(orden_id, items_nuevos, usuario, fecha=None):
         if o["estado"] == "devuelta":
             raise ValueError("No se puede editar una orden devuelta")
 
-        # ⬇️ FIX: la fecha del movimiento es la de la orden original
         fecha = fecha or o["fecha"]
 
         # ── Validar que la orden no quede sin pagos/abonos ──
-        _p, _a = 0, 0
         n_pagos_reales = conn.execute(
             "SELECT COUNT(*) AS n FROM pagos p "
             "JOIN metodos_pago m ON m.clave=p.metodo "
@@ -583,10 +648,11 @@ def editar_items_orden(orden_id, items_nuevos, usuario, fecha=None):
                     "fecha_ultima_mod=? WHERE id=?",
                     (it["cantidad"], fecha, it["producto_id"]))
 
-        # FIX: borrado más robusto por si el detalle quedó desfasado
+        # Borrar movimientos viejos de esta orden (motivo venta/combos)
         conn.execute(
             "DELETE FROM movimientos WHERE tipo='SALIDA' "
-            "AND motivo IN ('Venta', 'venta', 'Combos', 'combos') "
+            "AND LOWER(TRIM(COALESCE(motivo,''))) IN "
+            "('venta','combos') "
             "AND detalle LIKE ?",
             (f"%{o['numero_ticket']}%",))
         conn.execute(
@@ -703,7 +769,7 @@ def editar_items_orden(orden_id, items_nuevos, usuario, fecha=None):
                 "fecha,usuario) "
                 "VALUES(?,?,'SALIDA',?,?,?,?,?,?,?,?)",
                 (o["local_id"], it["producto_id"], it["cantidad"],
-                 "Venta", f"Ticket {o['numero_ticket']}",
+                 _MOTIVO_VENTA_POS, f"Ticket {o['numero_ticket']}",
                  rebaja_final, float(it["precio_unitario"]),
                  float(p["precio_costo"] or 0), fecha, username))
 
@@ -721,6 +787,7 @@ def editar_items_orden(orden_id, items_nuevos, usuario, fecha=None):
         "estado": nuevo_estado,
         "saldo_pendiente": nuevo_saldo,
     }
+
 
 # ═══════════════════════════════════════════════════════════
 # PAGOS: editar / agregar / eliminar
@@ -928,3 +995,4 @@ def set_cliente_orden(orden_id, cliente_id, usuario=None):
             (cliente_id, orden_id)
         )
         
+

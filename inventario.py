@@ -6,8 +6,18 @@ GANANCIA REAL: cada movimiento ENTRADA/SALIDA guarda precio_costo_momento.
 
 CACHÉ EN MEMORIA:
   Las lecturas frecuentes se cachean. Cualquier escritura limpia la
-  caché. Esto hace que listar_productos/totales_local sean instantáneos
-  al cambiar de pestaña o local.
+  caché.
+
+FIX 1 (POS ↔ Historial):
+  editar_movimiento ahora sincroniza el `orden_item` y los totales
+  de la orden si el movimiento viene de un POS (`detalle='Ticket X'`).
+  La sincronización en sentido inverso ya la hace `ventas.editar_items_orden`
+  (regenera los movimientos SALIDA de la orden).
+
+FIX 2 (promedio ponderado condicional):
+  Si el producto NO tenía precio (>0) en un campo, el nuevo precio se
+  fija directamente. Solo se promedia cuando YA existía un precio > 0.
+  Aplica por separado a costo y a venta.
 """
 import re
 import uuid
@@ -473,10 +483,6 @@ def buscar_producto_global_por_nombre(nombre: str) -> dict | None:
 
 def listar_movimientos(local_id=None, producto_id=None, texto=None,
                     tipo=None, offset=0, limite=30) -> list[dict]:
-    """
-    Lista movimientos con filtros aplicados en SQL.
-    `tipo`: None | "ENTRADA" | "SALIDA" | "BAJA" | "TRASPASO"
-    """
     sql = ("SELECT m.*, p.nombre AS producto, p.codigo AS codigo, "
         "l.nombre AS local FROM movimientos m "
         "JOIN productos p ON p.id=m.producto_id "
@@ -507,6 +513,7 @@ def listar_movimientos(local_id=None, producto_id=None, texto=None,
     with get_conn() as conn:
         return [dict(r) for r in
                 conn.execute(sql, tuple(params)).fetchall()]
+
 
 # ================= EXCEPCIONES =================
 
@@ -654,12 +661,19 @@ def registrar_entrada(nombre: str, cantidad, usuario, local_id: int,
             mc = (prod["moneda_costo"] or "CUP").upper()
             mv = (prod["moneda_venta"] or "CUP").upper()
 
+            # ─────────── FIX 2: promedio condicional ───────────
+            # Regla: si el producto YA tenía un precio > 0 en ese
+            # campo, se promedia. Si no (era 0), el nuevo precio se
+            # fija directamente.
             if pc_in is not None:
                 pc_orig_nuevo = convertir(pc_in, moneda, mc)
                 stock_antes = float(prod["stock"] or 0)
                 orig_antes = float(prod["precio_costo_orig"] or 0)
-                pc_orig = _promedio_ponderado(
-                    stock_antes, orig_antes, cantidad, pc_orig_nuevo)
+                if orig_antes <= 0.001:
+                    pc_orig = pc_orig_nuevo
+                else:
+                    pc_orig = _promedio_ponderado(
+                        stock_antes, orig_antes, cantidad, pc_orig_nuevo)
                 pc_cup = a_cup(pc_orig, mc)
                 conn.execute(
                     "UPDATE productos SET precio_costo=?, "
@@ -671,13 +685,22 @@ def registrar_entrada(nombre: str, cantidad, usuario, local_id: int,
                 pc_momento = float(prod["precio_costo"] or 0)
 
             if pu_in is not None:
-                pu_orig = convertir(pu_in, moneda, mv)
+                pu_orig_nuevo = convertir(pu_in, moneda, mv)
+                stock_antes_pu = float(prod["stock"] or 0)
+                pu_orig_antes = float(prod["precio_unitario_orig"] or 0)
+                if pu_orig_antes <= 0.001:
+                    pu_orig = pu_orig_nuevo
+                else:
+                    pu_orig = _promedio_ponderado(
+                        stock_antes_pu, pu_orig_antes,
+                        cantidad, pu_orig_nuevo)
                 pu_cup = a_cup(pu_orig, mv)
                 conn.execute(
                     "UPDATE productos SET precio_unitario=?, "
                     "precio_unitario_orig=?, fecha_ultima_mod=? WHERE id=?",
                     (pu_cup, pu_orig, fecha, pid),
                 )
+            # ─────────── FIN FIX 2 ───────────
 
             if categoria_id is not None:
                 conn.execute(
@@ -1287,13 +1310,21 @@ def totales_por_concepto(local_id) -> dict:
         if local_id != GENERAL_ID:
             filtro = " AND local_id=?"
             params.append(local_id)
+
+        # FIX: aceptar 'venta' y 'combos' (case-insensitive).
+        # Antes solo contaba 'venta' y las ventas nuevas con
+        # motivo 'Combos' no aparecían en el resumen.
+        _SQL_VENTA = (
+            "LOWER(TRIM(COALESCE(motivo,''))) IN ('venta','combos')"
+        )
+
         with get_conn() as conn:
             ventas = conn.execute(
                 "SELECT COUNT(*) AS n, COALESCE(SUM(cantidad),0) AS cant, "
                 "COALESCE(SUM((precio_unitario_momento - rebaja) * cantidad),0) "
                 "AS monto FROM movimientos "
                 "WHERE tipo='SALIDA' "
-                "AND LOWER(TRIM(COALESCE(motivo,'')))='venta'" + filtro,
+                f"AND {_SQL_VENTA}" + filtro,
                 tuple(params),
             ).fetchone()
             entradas = conn.execute(
@@ -1304,7 +1335,7 @@ def totales_por_concepto(local_id) -> dict:
             otras = conn.execute(
                 "SELECT COUNT(*) AS n, COALESCE(SUM(cantidad),0) AS cant "
                 "FROM movimientos WHERE tipo='SALIDA' "
-                "AND LOWER(TRIM(COALESCE(motivo,'')))<>'venta'" + filtro,
+                f"AND NOT ({_SQL_VENTA})" + filtro,
                 tuple(params),
             ).fetchone()
             bajas = conn.execute(
@@ -1395,9 +1426,67 @@ def eliminar_movimiento(mov_id, usuario):
                 "UPDATE productos SET fecha_ultima_mod=? WHERE id=?",
                 (row["ultima"], mov["producto_id"]),
             )
-            
+
 
 # ================= EDITAR MOVIMIENTO =================
+
+# Motivos válidos de venta (case-insensitive) para los movimientos
+# que provienen de un POS.
+_MOTIVOS_VENTA = ("venta", "combos")
+
+
+def _es_movimiento_de_pos(mov) -> bool:
+    """True si el movimiento está vinculado a una orden POS."""
+    detalle = (mov["detalle"] or "").strip()
+    return detalle.startswith("Ticket ")
+
+
+def _sincronizar_orden_desde_movimiento(conn, mov_viejo, nuevo_prod,
+                                        cantidad):
+    """
+    Si el movimiento original provenía de un POS
+    (`detalle = 'Ticket X'`), actualiza el `orden_item` asociado y
+    recalcula los totales de la orden.
+
+    La sincronización inversa (POS → Historial) la hace
+    `ventas.editar_items_orden`, que regenera los movimientos de la
+    orden. Aquí solo cubrimos Historial → POS.
+    """
+    detalle = (mov_viejo["detalle"] or "").strip()
+    if not detalle.startswith("Ticket "):
+        return
+    numero_ticket = detalle[len("Ticket "):].strip()
+    if not numero_ticket:
+        return
+
+    orden = conn.execute(
+        "SELECT * FROM ordenes_venta WHERE numero_ticket=?",
+        (numero_ticket,),
+    ).fetchone()
+    if orden is None or orden["estado"] == "anulada":
+        return
+
+    item = conn.execute(
+        "SELECT * FROM orden_items WHERE orden_id=? AND producto_id=?",
+        (orden["id"], mov_viejo["producto_id"]),
+    ).fetchone()
+    if item is None:
+        return
+
+    nueva_cantidad = float(cantidad)
+    pu = float(item["precio_unitario"] or 0)
+    reb = float(item["rebaja"] or 0)
+    nuevo_importe = round((pu - reb) * nueva_cantidad, 2)
+
+    conn.execute(
+        "UPDATE orden_items SET cantidad=?, importe=? WHERE id=?",
+        (nueva_cantidad, nuevo_importe, item["id"]),
+    )
+
+    # Recalcular subtotal/total/saldo/estado de la orden
+    from ventas import recalcular_orden_completa
+    recalcular_orden_completa(conn, orden["id"])
+
 
 @_write
 def editar_movimiento(mov_id, producto_id, tipo, cantidad, motivo,
@@ -1408,10 +1497,14 @@ def editar_movimiento(mov_id, producto_id, tipo, cantidad, motivo,
     - Revierte el efecto del movimiento original sobre el stock.
     - Aplica el efecto del nuevo movimiento.
     - Actualiza el registro en la BD.
+    - FIX 1: si el movimiento estaba vinculado a una orden POS,
+      sincroniza el `orden_item` y recalcula los totales de la orden.
 
-    Solo permite editar ENTRADA y SALIDA (los tipos con efecto claro
-    sobre stock). BAJA y TRASPASO_* se rechazan: para esos casos hay
-    que eliminar el movimiento y crear uno nuevo.
+    Solo permite editar ENTRADA y SALIDA.
+    Si el movimiento viene de un POS:
+      - El tipo debe seguir siendo SALIDA.
+      - El motivo debe seguir siendo 'Venta' o 'Combos'.
+      - No se puede cambiar el producto (para no descuadrar la orden).
     """
     username = _autorizar(usuario, _ROLES_OPERATIVOS)
 
@@ -1450,6 +1543,23 @@ def editar_movimiento(mov_id, producto_id, tipo, cantidad, motivo,
         if nuevo_prod is None:
             raise ValueError("Producto no encontrado")
 
+        # ── Restricciones adicionales si viene de un POS ──
+        if _es_movimiento_de_pos(mov):
+            if tipo != "SALIDA":
+                raise ValueError(
+                    "Este movimiento proviene de una venta POS. "
+                    "Solo se puede editar como SALIDA.")
+            motivo_lower = (motivo or "").lower()
+            if motivo_lower not in _MOTIVOS_VENTA:
+                raise ValueError(
+                    "Este movimiento proviene de una venta POS. "
+                    "El motivo debe seguir siendo 'Venta' o 'Combos'.")
+            if mov["producto_id"] != nuevo_prod["id"]:
+                raise ValueError(
+                    "No se puede cambiar el producto de un "
+                    "movimiento proveniente de una venta POS. "
+                    "Elimínalo y crea uno nuevo si lo necesitas.")
+
         stock_efectivo = float(nuevo_prod["stock"] or 0)
         if mov["producto_id"] == nuevo_prod["id"]:
             if mov["tipo"] == "ENTRADA":
@@ -1480,13 +1590,17 @@ def editar_movimiento(mov_id, producto_id, tipo, cantidad, motivo,
             "cantidad=?, motivo=?, fecha=?, usuario=? WHERE id=?",
             (nuevo_prod["local_id"], nuevo_prod["id"], tipo, cantidad,
              motivo, fecha, username, mov_id))
-        
+
+        # ─────────── FIX 1: sincronización con la orden POS ───────────
+        if tipo == "SALIDA" and _es_movimiento_de_pos(mov):
+            _sincronizar_orden_desde_movimiento(
+                conn, mov, nuevo_prod, cantidad
+            )
+
+
+# ================= BÚSQUEDA / CONTEO =================
 
 def buscar_productos_like(texto: str, local_id, limite: int = 8) -> list[dict]:
-    """
-    Busca productos activos cuyo nombre CONTENGA texto (case-insensitive).
-    Orden: por uso (nº movimientos del producto) DESC, luego por nombre.
-    """
     texto = (texto or "").strip()
     if not texto or local_id == GENERAL_ID:
         return []
@@ -1510,7 +1624,6 @@ def buscar_productos_like(texto: str, local_id, limite: int = 8) -> list[dict]:
 
 def contar_movimientos(local_id=None, producto_id=None,
                        texto=None, tipo=None) -> int:
-    """Cuenta total de movimientos con filtros (para saber si hay más)."""
     sql = ("SELECT COUNT(*) AS n FROM movimientos m "
            "JOIN productos p ON p.id=m.producto_id")
     cond, params = [], []
