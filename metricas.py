@@ -12,8 +12,8 @@ from db import get_conn, GENERAL_ID
 #
 # En este proyecto existen DOS motivos válidos para una venta:
 #
-#   'Venta'  → hardcodeado por el POS (ventas.registrar_venta)
-#   'Combos' → motivo default de la salida manual
+#   'Venta'  → ventas históricas (POS antiguo)
+#   'Combos' → motivo actual del POS y de la salida manual
 #              (configurable en configuracion.motivo_default_salida)
 #
 # Cualquier query que cuente ventas DEBE incluir ambos, o perderá
@@ -24,6 +24,13 @@ VENTA_MOTIVOS = ("venta", "combos")
 # Fragmento SQL reutilizable. Usa el alias `m` para la tabla movimientos.
 SQL_ES_VENTA = (
     "LOWER(TRIM(COALESCE(m.motivo,''))) "
+    "IN ('venta','combos')"
+)
+
+# Variante sin alias, para queries sobre `movimientos` que no usan
+# alias (por ejemplo, las funciones de compatibilidad del final).
+SQL_ES_VENTA_SIN_ALIAS = (
+    "LOWER(TRIM(COALESCE(motivo,''))) "
     "IN ('venta','combos')"
 )
 
@@ -77,7 +84,7 @@ def resumen_periodo(local_id, periodo: str) -> dict:
     Devuelve TODAS las métricas del período en un solo query.
 
     Cuenta como venta los motivos en VENTA_MOTIVOS ('Venta' del POS
-    y 'Combos' de la salida manual) y excluye movimientos de
+    histórico y 'Combos' del POS actual) y excluye movimientos de
     órdenes ANULADAS.
     """
     desde, hasta = rango_calendario(periodo)
@@ -257,9 +264,6 @@ def productos_estancados(local_id, dias: int = 30,
 
     Venta real = SALIDA con motivo en VENTA_MOTIVOS ('Venta' o
     'Combos') y que NO pertenezca a una orden anulada.
-
-    Se excluyen motivos de uso interno ('Pantry', nombres de
-    empleados, etc.).
     """
     fecha_limite = (datetime.now() - timedelta(days=dias)).strftime(
         "%Y-%m-%d %H:%M:%S")
@@ -320,6 +324,9 @@ def productos_stock_critico(local_id, limite: int = 15) -> list[dict]:
 # ═══════════════════════════════════════════════════════════
 # Compatibilidad con código antiguo
 # ═══════════════════════════════════════════════════════════
+# FIX: todas estas funciones usaban `='venta'` y por tanto NO
+# contaban las ventas nuevas con motivo 'Combos'. Ahora usan
+# SQL_ES_VENTA_SIN_ALIAS.
 
 def ingresado_periodo(local_id, desde, hasta) -> float:
     return _one_sum(local_id, desde, hasta,
@@ -329,15 +336,13 @@ def ingresado_periodo(local_id, desde, hasta) -> float:
 
 def vendido_periodo(local_id, desde, hasta) -> float:
     return _one_sum(local_id, desde, hasta,
-                    "tipo='SALIDA' AND "
-                    "LOWER(TRIM(COALESCE(motivo,'')))='venta'",
+                    "tipo='SALIDA' AND " + SQL_ES_VENTA_SIN_ALIAS,
                     "(precio_unitario_momento - rebaja) * cantidad")
 
 
 def costo_vendido_periodo(local_id, desde, hasta) -> float:
     return _one_sum(local_id, desde, hasta,
-                    "tipo='SALIDA' AND "
-                    "LOWER(TRIM(COALESCE(motivo,'')))='venta'",
+                    "tipo='SALIDA' AND " + SQL_ES_VENTA_SIN_ALIAS,
                     "precio_costo_momento * cantidad")
 
 
@@ -359,21 +364,20 @@ def entradas_periodo(local_id, desde, hasta) -> dict:
 
 def ventas_periodo(local_id, desde, hasta) -> dict:
     return _one_count(local_id, desde, hasta,
-                      "tipo='SALIDA' AND "
-                      "LOWER(TRIM(COALESCE(motivo,'')))='venta'")
+                      "tipo='SALIDA' AND " + SQL_ES_VENTA_SIN_ALIAS)
 
 
 def otras_salidas_periodo(local_id, desde, hasta) -> dict:
     return _one_count(local_id, desde, hasta,
-                      "tipo='SALIDA' AND "
-                      "LOWER(TRIM(COALESCE(motivo,'')))<>'venta'")
+                      "tipo='SALIDA' AND NOT ("
+                      + SQL_ES_VENTA_SIN_ALIAS + ")")
 
 
 def ventas_sin_costo(local_id, desde, hasta) -> int:
     f, p = _filtro(local_id, desde, hasta)
     sql = ("SELECT COUNT(*) AS n FROM movimientos "
            "WHERE tipo='SALIDA' "
-           "AND LOWER(TRIM(COALESCE(motivo,'')))='venta' "
+           f"AND {SQL_ES_VENTA_SIN_ALIAS} "
            "AND fecha >= ? AND fecha < ? "
            "AND precio_costo_momento <= 0" + f)
     with get_conn() as conn:
@@ -409,4 +413,5 @@ def _one_count(local_id, desde, hasta, where):
         row = conn.execute(sql, tuple(p)).fetchone()
     return {"n": int(row["n"] or 0),
             "cantidad": float(row["cant"] or 0)}
-    
+
+
