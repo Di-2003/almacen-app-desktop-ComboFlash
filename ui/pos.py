@@ -9,10 +9,12 @@ POS — Nueva Venta.
 FIX (bottom sheet de cobro):
   El sheet de cobro se reestructura en DOS zonas para evitar scroll
   anidado y garantizar que los botones "+ Agregar pago" y "Confirmar
-  venta" siempre estén visibles y clicables:
-    · Zona scrolleable: lista de pagos + resumen de totales.
-    · Zona fija: botones, anclados abajo.
-  Se introduce `_bottom_sheet_cobro`, que NO anida scroll.
+  venta" siempre estén visibles y clicables.
+
+FIX (redondeo de autocompletado):
+  Al abrir el diálogo de un pago, el monto se redondea HACIA ARRIBA
+  a 2 decimales. Antes se redondeaba con round() normal, lo que podía
+  dejar un pequeño faltante (p.ej. 40.4025 → 40.40 → faltan $2 CUP).
 """
 import flet as ft
 import math
@@ -50,6 +52,11 @@ def _redondear_efectivo(monto: float, moneda: str) -> float:
     if (moneda or "").upper() in ("USD", "EUR"):
         return float(math.ceil(monto))
     return round(monto, 2)
+
+
+def _redondear_hacia_arriba_2dec(monto: float) -> float:
+    """Redondea hacia arriba a 2 decimales (evita faltantes)."""
+    return math.ceil(monto * 100) / 100
 
 
 def _calcular_vuelto(monto_moneda: float, tasa: float,
@@ -966,10 +973,30 @@ def _abrir_cobro(app, bs_carrito, rebuild_carrito,
                     radius=ft.BorderRadius.all(12))),
         ))
 
+        # ── Aviso bajo el botón (feedback visual) ──
+        if not confirmar_ok:
+            if not pagos_state["pagos"]:
+                zona_fija.controls.append(ft.Text(
+                    "Agrega al menos un pago para confirmar",
+                    size=11, color=es.COLOR_TEXTO_SUAVE,
+                    text_align=ft.TextAlign.CENTER))
+            elif falta > 0.01:
+                zona_fija.controls.append(ft.Text(
+                    f"Falta cubrir ${falta:,.2f} CUP",
+                    size=11, color=es.COLOR_PELIGRO,
+                    weight=ft.FontWeight.BOLD,
+                    text_align=ft.TextAlign.CENTER))
+
         if mounted(zona_scroll):
             zona_scroll.update()
         if mounted(zona_fija):
             zona_fija.update()
+
+        # Forzar repintado del estado disabled de los botones
+        try:
+            page.update()
+        except Exception:
+            pass
 
     rebuild()
 
@@ -1094,6 +1121,8 @@ def _agregar_pago(app, metodo, falta_cup, pagos_state, rebuild,
     Diálogo para agregar/editar un pago del carrito en el POS.
 
     - Chips de moneda (no Dropdown: Flet 1.0.3 no propaga on_change).
+    - Autocompletado con redondeo HACIA ARRIBA a 2 decimales para
+      evitar faltantes (p.ej. 40.4025 → 40.41 en vez de 40.40).
     - Efectivo USD/EUR: redondeo hacia arriba a entero + campo vuelto.
     - Fiado: diálogo específico con cliente.
     """
@@ -1111,9 +1140,13 @@ def _agregar_pago(app, metodo, falta_cup, pagos_state, rebuild,
     moneda_fija = moneda_efectiva_metodo(metodo)
     moneda_inicial = moneda_fija or "CUP"
 
+    # ── FIX: redondeo hacia arriba a 2 decimales ──
     tasa_ini = inv.get_tasa(moneda_inicial)
-    monto_ini = round(falta_cup / tasa_ini, 2) if tasa_ini else 0.0
-    # Redondear hacia arriba si es Efectivo USD/EUR
+    if tasa_ini > 0:
+        monto_ini = _redondear_hacia_arriba_2dec(falta_cup / tasa_ini)
+    else:
+        monto_ini = 0.0
+    # Redondear a entero si es Efectivo USD/EUR
     if _es_efectivo_usd_eur(metodo):
         monto_ini = _redondear_efectivo(monto_ini, moneda_inicial)
 
