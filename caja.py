@@ -1,7 +1,7 @@
 """
 Sesiones de caja opcionales.
 - Varias sesiones por día por usuario.
-- Cuadre: saldo inicial + Σpagos + Σabonos - Σgastos de la sesión.
+- Cuadre: saldo inicial + Σpagos + Σabonos − Σvueltos − Σgastos.
 - Cierre: compara con conteo físico y calcula diferencia.
 """
 from datetime import datetime
@@ -40,7 +40,11 @@ def abrir_sesion(local_id, usuario, saldo_inicial=0.0,
 
 
 def calcular_saldo_sistema(sesion_id) -> float:
-    """Saldo esperado = inicial + pagos + abonos - gastos de la sesión."""
+    """
+    Saldo esperado = inicial + pagos + abonos - vueltos - gastos.
+    El vuelto se entrega físicamente en CUP al cliente, así que
+    sale del cajón y debe restarse.
+    """
     with get_conn() as conn:
         s = conn.execute(
             "SELECT * FROM caja_sesiones WHERE id=?", (sesion_id,)
@@ -60,7 +64,12 @@ def calcular_saldo_sistema(sesion_id) -> float:
             "WHERE o.local_id=? AND a.fecha >= ? AND a.fecha <= ?",
             (s["local_id"], s["abierta"], fin)
         ).fetchone()
-        # v10: gastos asociados a esta sesión de caja
+        # Vuelto entregado al cliente (en CUP)
+        vueltos = conn.execute(
+            "SELECT COALESCE(SUM(vuelto_cup),0) AS t FROM ordenes_venta "
+            "WHERE local_id=? AND fecha >= ? AND fecha <= ?",
+            (s["local_id"], s["abierta"], fin)
+        ).fetchone()
         gastos_sesion = conn.execute(
             "SELECT COALESCE(SUM(monto_cup),0) AS t FROM gastos "
             "WHERE caja_sesion_id=?",
@@ -69,6 +78,7 @@ def calcular_saldo_sistema(sesion_id) -> float:
     return (float(s["saldo_inicial"] or 0)
             + float(pagos["t"] or 0)
             + float(abonos["t"] or 0)
+            - float(vueltos["t"] or 0)
             - float(gastos_sesion["t"] or 0))
 
 
@@ -127,6 +137,11 @@ def resumen_sesion(sesion_id) -> dict:
             "GROUP BY a.metodo, a.moneda ORDER BY a.metodo",
             (s["local_id"], s["abierta"], fin)
         ).fetchall()
+        vueltos = conn.execute(
+            "SELECT COALESCE(SUM(vuelto_cup),0) AS t FROM ordenes_venta "
+            "WHERE local_id=? AND fecha >= ? AND fecha <= ?",
+            (s["local_id"], s["abierta"], fin)
+        ).fetchone()
         gastos_ses = conn.execute(
             "SELECT COALESCE(SUM(monto_cup),0) AS t FROM gastos "
             "WHERE caja_sesion_id=?",
@@ -136,5 +151,6 @@ def resumen_sesion(sesion_id) -> dict:
         "sesion": dict(s),
         "por_metodo": [dict(r) for r in por_metodo],
         "por_metodo_abonos": [dict(r) for r in por_metodo_ab],
+        "vueltos": float(vueltos["t"] or 0),
         "gastos_sesion": float(gastos_ses["t"] or 0),
     }

@@ -27,6 +27,18 @@ def _subtitulo_tasa(clave, moneda):
     return f"1 {moneda} = {_fmt_num(tasa)} CUP"
 
 
+def _subtitulo_redondeo() -> str:
+    try:
+        v = inv.get_config("redondeo_divisa") or "entero"
+    except Exception:
+        v = "entero"
+    return {
+        "entero":   "Al entero (ej. 34 USD)",
+        "decimal1": "1 decimal (ej. 33.7 USD)",
+        "decimal2": "2 decimales (ej. 33.63 USD)",
+    }.get(v, "Al entero (ej. 34 USD)")
+
+
 def _tile(icono, titulo, subtitulo, on_click, color=None):
     color = color or es.COLOR_ACENTO
     return ft.Container(
@@ -138,6 +150,9 @@ def vista_perfil(app):
     def configurar_moneda_visualizacion(e):
         _dlg_moneda_visualizacion(app)
 
+    def configurar_redondeo(e):
+        _dlg_redondeo_divisa(app)
+
     def configurar_tasa_usd(e):
         _dlg_tasa(app, "tasa_usd", "Tasa USD → CUP",
                 "CUP por 1 USD", "USD")
@@ -192,6 +207,7 @@ def vista_perfil(app):
     sub_usd = _subtitulo_tasa("tasa_usd", "USD")
     sub_eur = _subtitulo_tasa("tasa_eur", "EUR")
     sub_mon = f"Ver precios en {inv.get_moneda_visualizacion()}"
+    sub_redondeo = _subtitulo_redondeo()
 
     bloques = [
         header,
@@ -211,6 +227,9 @@ def vista_perfil(app):
         _tile(ft.Icons.VISIBILITY, "Moneda de visualización",
               sub_mon, configurar_moneda_visualizacion,
               color=es.COLOR_INFO),
+        _tile(ft.Icons.ROUNDED_CORNER, "Redondeo en divisa",
+              sub_redondeo, configurar_redondeo,
+              color=es.COLOR_AMBAR),
         _tile(ft.Icons.ATTACH_MONEY, "Tasa de cambio USD",
               sub_usd, configurar_tasa_usd, color=es.COLOR_AMBAR),
         _tile(ft.Icons.EURO_SYMBOL, "Tasa de cambio EUR",
@@ -415,6 +434,55 @@ def _dlg_moneda_visualizacion(app):
             ft.Container(height=8),
             dd,
         ], tight=True, width=300, spacing=8),
+        actions=[
+            ft.TextButton("Cancelar", on_click=cancelar),
+            ft.FilledButton("Guardar", on_click=guardar,
+                            style=es.estilo_boton_marca()),
+        ],
+        actions_alignment=ft.MainAxisAlignment.END)
+    dlg_ref["dlg"] = dlg
+    page.show_dialog(dlg)
+
+
+def _dlg_redondeo_divisa(app):
+    page = app.page
+    actual = inv.get_config("redondeo_divisa") or "entero"
+    dd = ft.Dropdown(
+        label="Redondeo al cobrar en divisa",
+        value=actual,
+        options=[
+            ft.DropdownOption(
+                key="entero", text="Al entero superior (34 USD)"),
+            ft.DropdownOption(
+                key="decimal1", text="1 decimal superior (33.7 USD)"),
+            ft.DropdownOption(
+                key="decimal2", text="2 decimales superiores (33.63 USD)"),
+        ],
+        **es.borde_textfield(12))
+    dlg_ref = {"dlg": None}
+
+    def guardar(e):
+        inv.set_config("redondeo_divisa", dd.value or "entero")
+
+        def _despues():
+            snack(page, f"Redondeo cambiado a {dd.value}", "ok")
+            app.refrescar()
+
+        cerrar_dialogo(page, dlg_ref["dlg"], on_close=_despues)
+
+    def cancelar(e):
+        cerrar_dialogo(page, dlg_ref["dlg"])
+
+    dlg = ft.AlertDialog(
+        title=ft.Text("Redondeo en divisa"),
+        content=ft.Column([
+            ft.Text(
+                "Cuando el cliente paga en USD/EUR, el monto se "
+                "redondea hacia arriba. El vuelto se entrega en CUP.",
+                size=12, color=es.COLOR_TEXTO_SUAVE),
+            ft.Container(height=8),
+            dd,
+        ], tight=True, width=340, spacing=8),
         actions=[
             ft.TextButton("Cancelar", on_click=cancelar),
             ft.FilledButton("Guardar", on_click=guardar,

@@ -1,11 +1,5 @@
 """
 Esquema BD v10 + migración automática desde P1 (v4).
-
-Cuando abres una BD del P1 viejo (schema v4 sin `local_id`), se
-detecta y se migra IN-PLACE preservando usuarios, configuración,
-productos y movimientos.
-
-Idempotente: si ya está en v10, no hace nada.
 """
 import sqlite3
 from datetime import datetime
@@ -24,14 +18,12 @@ CATEGORIAS_GASTOS_DEFAULT = (
     "Luz", "Agua", "Alquiler", "Salario", "Transporte", "Otros",
 )
 
-# (clave, etiqueta, activo, orden, requiere_moneda, es_credito,
-#  cuenta, qr_imagen, moneda_fija)
 METODOS_PAGO_DEFAULT = (
     ("Efectivo",      "Efectivo",       1, 1, 1, 0, None, None, None),
     ("Transfermóvil", "Transfermóvil",  1, 2, 0, 0, None, None, "CUP"),
     ("EnZona",        "EnZona",         1, 3, 0, 0, None, None, "CUP"),
-    ("Zelle",         "Zelle",          1, 4, 0, 0, None, None, "USD"),  # ← activo
-    ("Tarjeta",       "Tarjeta",        1, 5, 1, 0, None, None, None),   # ← activo
+    ("Zelle",         "Zelle",          1, 4, 0, 0, None, None, "USD"),
+    ("Tarjeta",       "Tarjeta",        1, 5, 1, 0, None, None, None),
     ("Fiado",         "Fiado",          1, 6, 0, 1, None, None, None),
 )
 
@@ -39,9 +31,6 @@ METODOS_PAGO_DEFAULT = (
 SCHEMA = """
 PRAGMA foreign_keys = ON;
 
--- ══════════════════════════════════════════════════════════════
--- CORE
--- ══════════════════════════════════════════════════════════════
 CREATE TABLE IF NOT EXISTS meta (
     clave TEXT PRIMARY KEY,
     valor TEXT NOT NULL
@@ -76,9 +65,6 @@ CREATE TABLE IF NOT EXISTS categorias (
     activo  INTEGER NOT NULL DEFAULT 1
 );
 
--- ══════════════════════════════════════════════════════════════
--- INVENTARIO
--- ══════════════════════════════════════════════════════════════
 CREATE TABLE IF NOT EXISTS productos (
     id                    INTEGER PRIMARY KEY AUTOINCREMENT,
     local_id              INTEGER NOT NULL,
@@ -141,9 +127,6 @@ CREATE INDEX IF NOT EXISTS idx_mov_local_fecha
 CREATE INDEX IF NOT EXISTS idx_mov_tipo_motivo
     ON movimientos(tipo, motivo);
 
--- ══════════════════════════════════════════════════════════════
--- POS + CLIENTES + CAJA + MÉTODOS
--- ══════════════════════════════════════════════════════════════
 CREATE TABLE IF NOT EXISTS clientes (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     nombre         TEXT NOT NULL COLLATE NOCASE,
@@ -279,9 +262,6 @@ CREATE TABLE IF NOT EXISTS metodos_pago (
     moneda_fija     TEXT
 );
 
--- ══════════════════════════════════════════════════════════════
--- GASTOS + PROVEEDORES (v10)
--- ══════════════════════════════════════════════════════════════
 CREATE TABLE IF NOT EXISTS categorias_gastos (
     id      INTEGER PRIMARY KEY AUTOINCREMENT,
     nombre  TEXT UNIQUE NOT NULL COLLATE NOCASE,
@@ -361,19 +341,10 @@ CREATE INDEX IF NOT EXISTS idx_pagos_prov_fecha
 """
 
 
-# ============================================================
-# CONEXIÓN
-# ============================================================
-
 from contextlib import contextmanager
 
 @contextmanager
 def get_conn():
-    """
-    Conexión SQLite que se CIERRA AUTOMÁTICAMENTE al salir del with.
-    Antes era una función normal y la conexión quedaba abierta,
-    bloqueando el archivo en Windows.
-    """
     conn = sqlite3.connect(DB_PATH, timeout=15.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
@@ -391,18 +362,13 @@ def get_conn():
     finally:
         conn.close()
 
-# ============================================================
-# INICIALIZACIÓN
-# ============================================================
 
 def inicializar_db() -> None:
     with get_conn() as conn:
-        # 1) ¿Viene del P1 viejo (v4)? → migrar y salir.
         if _detectar_schema_p1(conn):
             _migrar_v4_a_v10(conn)
             return
 
-        # 2) Ya en formato P2: ¿virgen o ya migrada?
         version = _leer_version(conn)
 
         if version is None:
@@ -422,12 +388,8 @@ def inicializar_db() -> None:
         _asegurar_metodos_pago(conn)
         _marcar_version(conn)
 
-# ============================================================
-# MIGRACIÓN P1 (v4) → P2 (v10)
-# ============================================================
 
 def _detectar_schema_p1(conn) -> bool:
-    """True si `productos` existe pero NO tiene `local_id` (P1 v4)."""
     try:
         rows = conn.execute("PRAGMA table_info(productos)").fetchall()
     except sqlite3.OperationalError:
@@ -438,28 +400,13 @@ def _detectar_schema_p1(conn) -> bool:
 
 
 def _migrar_v4_a_v10(conn) -> None:
-    """
-    Migración P1 (v4) -> P2 (v10) preservando datos.
-
-    Estrategia:
-      1. Renombrar productos/movimientos viejos.
-      2. Ejecutar SCHEMA (crea las nuevas).
-      3. Insertar Almacén + categorías + métodos de pago.
-      4. Copiar productos viejos con código secuencial.
-      5. Copiar movimientos viejos.
-      6. Borrar tablas temporales.
-      7. Marcar versión = 10.
-    """
     print("[migración] Detectado esquema P1 (v4). Migrando a v10...")
 
-    # 1) Renombrar
     conn.execute("ALTER TABLE productos RENAME TO _productos_v4")
     conn.execute("ALTER TABLE movimientos RENAME TO _movimientos_v4")
 
-    # 2) Crear schema v10
     conn.executescript(SCHEMA)
 
-    # 3) Almacén + defaults
     _asegurar_almacen(conn)
     _insertar_categorias_default(conn)
     _insertar_categorias_gastos_default(conn)
@@ -469,7 +416,6 @@ def _migrar_v4_a_v10(conn) -> None:
         "SELECT id FROM locales WHERE es_almacen=1"
     ).fetchone()["id"]
 
-    # 4) Copiar productos
     cols_movs = {r["name"] for r in conn.execute(
         "PRAGMA table_info(_movimientos_v4)").fetchall()}
     tiene_precio_momento = "precio_unitario_mov" in cols_movs
@@ -511,7 +457,6 @@ def _migrar_v4_a_v10(conn) -> None:
 
     n_prods = len(productos_viejos)
 
-    # 5) Copiar movimientos
     movs_viejos = conn.execute(
         "SELECT * FROM _movimientos_v4 ORDER BY id ASC"
     ).fetchall()
@@ -539,11 +484,9 @@ def _migrar_v4_a_v10(conn) -> None:
 
     n_movs = len(movs_viejos)
 
-    # 6) Borrar temporales (hijo primero por FK)
     conn.execute("DROP TABLE _movimientos_v4")
     conn.execute("DROP TABLE _productos_v4")
 
-    # 7) Marcar versión
     _marcar_version(conn)
 
     print(f"[migración] OK: {n_prods} productos, {n_movs} movimientos "
@@ -553,15 +496,10 @@ def _migrar_v4_a_v10(conn) -> None:
 
 
 def _generar_codigo_secuencial(indice: int) -> str:
-    """1 → FA0001, 2 → FA0002, …, 10000 → FB0001, …"""
     letra = chr(65 + ((indice - 1) // 9999))
     num = ((indice - 1) % 9999) + 1
     return f"F{letra}{num:04d}"
 
-
-# ============================================================
-# HELPERS DE VERSIÓN
-# ============================================================
 
 def _leer_version(conn):
     try:
@@ -579,10 +517,6 @@ def _marcar_version(conn) -> None:
         "ON CONFLICT(clave) DO UPDATE SET valor=excluded.valor",
         (str(VERSION_ESQUEMA),))
 
-
-# ============================================================
-# DEFAULTS
-# ============================================================
 
 def _insertar_categorias_default(conn) -> None:
     for nombre in CATEGORIAS_DEFAULT:
@@ -609,12 +543,16 @@ def _asegurar_defaults(conn) -> None:
         "moneda_visualizacion":    "CUP",
         "pos_modo":                "opcional",
         "caja_obligatoria":        "0",
+        # NUEVA: cómo redondear el monto cuando se cobra en divisa.
+        #   entero    → 34.00 USD  (billetes físicos, sobrante grande)
+        #   decimal1  → 33.7  USD  (equilibrado, recomendado)
+        #   decimal2  → 33.63 USD  (mínimo sobrante)
+        "redondeo_divisa":         "entero",
     }.items():
         conn.execute(
             "INSERT OR IGNORE INTO configuracion(clave,valor) VALUES(?,?)",
             (k, v))
 
-    # Migración: si quedó "Venta" del P2 original → "Combos"
     row = conn.execute(
         "SELECT valor FROM configuracion "
         "WHERE clave='motivo_default_salida'"
@@ -637,7 +575,6 @@ def _asegurar_almacen(conn) -> None:
 
 
 def _asegurar_columnas_extra(conn) -> None:
-    """Añade columnas que pudieran faltar en BDs migradas."""
     for tabla, col, defn in (
         ("productos", "es_granel", "INTEGER NOT NULL DEFAULT 0"),
         ("movimientos", "proveedor_id", "INTEGER"),
@@ -663,21 +600,16 @@ def _asegurar_indices_extra(conn) -> None:
 
 
 def _asegurar_metodos_pago(conn) -> None:
-    # 1. Migrar pagos históricos con métodos viejos
     conn.execute(
         "UPDATE pagos SET metodo='Efectivo' "
         "WHERE metodo IN ('Efectivo CUP','Efectivo USD',"
         "                 'Efectivo EUR','Efectivo MLC')"
     )
-
-    # 2. Borrar métodos viejos (ya no se usan)
     conn.execute(
         "DELETE FROM metodos_pago "
         "WHERE clave IN ('Efectivo CUP','Efectivo USD',"
         "                'Efectivo EUR','Efectivo MLC')"
     )
-
-    # 3. Insertar/actualizar los nuevos
     for (clave, etiqueta, activo, orden, req_mon, es_cred,
          cuenta, qr, mon_fija) in METODOS_PAGO_DEFAULT:
         conn.execute(
@@ -694,9 +626,6 @@ def _asegurar_metodos_pago(conn) -> None:
             (clave, etiqueta, activo, orden, req_mon, es_cred,
             cuenta, qr, mon_fija))
 
-# ============================================================
-# Preferencias
-# ============================================================
 
 def get_pref(clave: str) -> str | None:
     with get_conn() as conn:

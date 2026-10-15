@@ -387,7 +387,8 @@ def _calcular_resumen_cobros(o) -> dict:
     Devuelve un resumen del efectivo real cobrado y desglosado:
       - cobrado_cup: suma de pagos reales + abonos (aplicado)
       - efectivo_cup: bruto de pagos + abonos (sin descontar vuelto)
-      - vuelto_cup: suma de vueltos dados
+      - vuelto_cup: suma de vueltos dados (incluye el vuelto de la
+        orden por pagos en divisa redondeados al alza)
       - propina_cup: suma de propinas (bruto - aplicado - vuelto)
     """
     from configuracion_negocio import obtener_metodo_pago
@@ -419,13 +420,16 @@ def _calcular_resumen_cobros(o) -> dict:
         vuelto_cup += vu
         propina_cup += prop
 
+    # Vuelto registrado a nivel de la orden (pago inicial en divisa
+    # redondeado al alza, ej. 34 USD × 770 = 26,180 → vuelto 290).
+    vuelto_cup += float(o.get("vuelto_cup") or 0)
+
     return {
         "cobrado_cup": cobrado_cup,
         "efectivo_cup": efectivo_cup,
         "vuelto_cup": vuelto_cup,
         "propina_cup": propina_cup,
     }
-
 
 def _fila_pago_detalle(p) -> ft.Container:
     """Fila informativa de un pago real (no Fiado)."""

@@ -10,6 +10,7 @@ from ui.componentes import (
 )
 from ui._scroll import columna_scroll
 
+
 def vista_caja(app):
     page = app.page
     lista = columna_scroll("/caja", app, [], spacing=10)
@@ -316,16 +317,27 @@ def _detalle_sesion(app, s):
                 ft.Text(f"{m['monto']:,.2f}", size=12,
                         color=es.COLOR_TEXTO_SUAVE),
             ]))
-    
+
+    if res.get("vueltos", 0) > 0.01:
+        contenido.controls.append(ft.Divider(height=1,
+                                              color=es.COLOR_BORDE))
+        contenido.controls.append(ft.Row([
+            ft.Text("Vueltos entregados", size=12, expand=True,
+                    color=es.COLOR_TEXTO_SUAVE),
+            ft.Text(f"-${res['vueltos']:,.2f}", size=12,
+                    color=es.COLOR_AMBAR),
+        ]))
+
     if res.get("gastos_sesion", 0) > 0.01:
-        contenido.controls.append(ft.Divider(height=1, color=es.COLOR_BORDE))
+        contenido.controls.append(ft.Divider(height=1,
+                                              color=es.COLOR_BORDE))
         contenido.controls.append(ft.Row([
             ft.Text("Gastos de la sesión", size=12, expand=True,
                     color=es.COLOR_TEXTO_SUAVE),
             ft.Text(f"-${res['gastos_sesion']:,.2f}", size=12,
                     color=es.COLOR_PELIGRO),
         ]))
-    
+
     if s["cerrada"]:
         contenido.controls += [
             ft.Divider(height=1, color=es.COLOR_BORDE),
