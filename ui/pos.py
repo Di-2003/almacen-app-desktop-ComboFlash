@@ -1,15 +1,16 @@
 """
 POS — Nueva Venta.
+- Búsqueda por nombre/código + chips de categoría.
+- Lista de productos con botón "+" para agregar al carrito.
+- Carrito en bottom sheet con edición, cliente, descuento global.
+- Modal de cobro con hasta 3 pagos y pago mixto.
+- Al confirmar: registra venta + muestra ticket para compartir.
 
-Reglas de cobro:
-  · Efectivo CUP: monto libre, vuelto en CUP.
-  · Cualquier pago en divisa (USD/EUR): se redondea HACIA ARRIBA
-    según `configuracion.redondeo_divisa`:
-      - entero    → 34.00 USD
-      - decimal1  → 33.7  USD
-      - decimal2  → 33.63 USD
-  · El vuelto se entrega en CUP. Nunca en la divisa.
-  · El backend valida que el exceso ≤ 1 unidad de divisa.
+FIX (acumulación por redondeo):
+  Al cambiar de moneda en el diálogo de pago, se calcula el display
+  desde `cup_objetivo` (fuente de verdad en CUP), no desde el monto
+  actual ya redondeado. Esto evita que el monto crezca sin fin al
+  alternar entre CUP/USD/EUR repetidamente.
 """
 import flet as ft
 import math
@@ -913,7 +914,6 @@ def _abrir_cobro(app, bs_carrito, rebuild_carrito,
 
         sobrante_cup = -falta if falta < -0.01 else 0.0
 
-        # Resumen
         filas = [
             _fila_total("Total venta", f"${tot['total']:,.2f}"),
             _fila_total("Pagado",
@@ -1115,9 +1115,14 @@ def _elegir_metodo(app, metodos, pagos_state, rebuild):
 def _agregar_pago(app, metodo, falta_cup, pagos_state, rebuild,
                   indice_existente=None):
     """
-    Diálogo para agregar/editar un pago. El monto en divisa se
-    redondea HACIA ARRIBA según `redondeo_divisa`. El vuelto se
-    entrega en CUP.
+    Diálogo para agregar/editar un pago.
+
+    El monto en divisa se redondea HACIA ARRIBA según config. El
+    vuelto se entrega en CUP.
+
+    Fuente de verdad: `cup_objetivo` (en CUP). El display se calcula
+    SIEMPRE desde ahí al cambiar de moneda, así el redondeo no se
+    acumula al alternar entre chips CUP/USD/EUR.
     """
     from configuracion_negocio import (
         moneda_efectiva_metodo, es_credito_metodo,
@@ -1133,20 +1138,23 @@ def _agregar_pago(app, metodo, falta_cup, pagos_state, rebuild,
     moneda_inicial = moneda_fija or "CUP"
 
     es_efe = _es_efectivo(metodo)
-    es_divisa = moneda_inicial != "CUP"
 
-    # Autocompletado
+    # Valor de referencia (fuente de verdad en CUP).
+    estado = {
+        "moneda": moneda_inicial,
+        "cup_objetivo": float(falta_cup),
+    }
+
+    # Monto inicial en la moneda del método
     tasa_ini = inv.get_tasa(moneda_inicial)
     if tasa_ini > 0:
         monto_ini = falta_cup / tasa_ini
-        if es_divisa:
+        if moneda_inicial != "CUP":
             monto_ini = _redondear_divisa(monto_ini, moneda_inicial)
         else:
             monto_ini = round(monto_ini, 2)
     else:
         monto_ini = 0.0
-
-    estado = {"moneda": moneda_inicial}
 
     def _fmt_monto(v, m):
         if (m or "").upper() == "CUP":
@@ -1173,17 +1181,22 @@ def _agregar_pago(app, metodo, falta_cup, pagos_state, rebuild,
             return 0.0
 
     def _convertir_moneda(m):
-        v_antes = _leer_monto()
-        m_antes = estado["moneda"]
-        t_antes = inv.get_tasa(m_antes)
+        """
+        Calcula el nuevo display desde `cup_objetivo`, NO desde el
+        monto actual. Evita acumulación por redondeo al alternar
+        entre monedas.
+        """
+        if m == estado["moneda"]:
+            return
         t_nueva = inv.get_tasa(m)
-        if t_antes > 0 and t_nueva > 0 and m_antes != m:
-            v_nueva = v_antes * t_antes / t_nueva
+        if t_nueva > 0:
+            v_nueva = estado["cup_objetivo"] / t_nueva
             if (m or "").upper() != "CUP":
                 v_nueva = _redondear_divisa(v_nueva, m)
             else:
                 v_nueva = round(v_nueva, 2)
             tf_monto.value = _fmt_monto(v_nueva, m)
+            tf_monto.label = f"Monto ({m})"
             try:
                 tf_monto.update()
             except Exception:
@@ -1194,12 +1207,6 @@ def _agregar_pago(app, metodo, falta_cup, pagos_state, rebuild,
         if estado["moneda"] == m:
             return
         _convertir_moneda(m)
-        # Actualizar el label del campo al nuevo monto
-        tf_monto.label = f"Monto ({m})"
-        try:
-            tf_monto.update()
-        except Exception:
-            pass
         _rebuild_chips()
         _rec_info()
 
@@ -1240,6 +1247,10 @@ def _agregar_pago(app, metodo, falta_cup, pagos_state, rebuild,
             vuelto = equivalente - falta_cup
             lbl_vuelto.value = (f"Vuelto al cliente: "
                                 f"${vuelto:,.2f} CUP (en CUP)")
+        elif (m or "").upper() == "CUP" and v > falta_cup + 0.01:
+            vuelto = v - falta_cup
+            lbl_vuelto.value = (f"Vuelto al cliente: "
+                                f"${vuelto:,.2f} CUP")
         else:
             lbl_vuelto.value = ""
         try:
@@ -1248,7 +1259,19 @@ def _agregar_pago(app, metodo, falta_cup, pagos_state, rebuild,
         except Exception:
             pass
 
-    tf_monto.on_change = lambda e: _rec_info()
+    def _on_monto_editado(e):
+        """
+        El usuario tecleó un nuevo monto. Actualizamos cup_objetivo
+        para que futuros cambios de moneda partan de este valor.
+        """
+        try:
+            v = _leer_monto()
+            estado["cup_objetivo"] = v * inv.get_tasa(estado["moneda"])
+        except Exception:
+            pass
+        _rec_info()
+
+    tf_monto.on_change = _on_monto_editado
 
     _rebuild_chips()
     _rec_info()
