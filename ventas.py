@@ -193,7 +193,12 @@ def registrar_venta(carrito, pagos, usuario, local_id,
     saldo_restante = total_cup
     pagos_proc = []
     hay_fiado = False
-    total_pagado_cup = 0.0
+    # total_cubierto: incluye Fiado. Sirve para validar que se cubre
+    #                el total (aunque sea a crédito).
+    # total_cobrado: solo efectivo + no-efectivo. Es lo que entró
+    #                físicamente. Sirve para saldo_pendiente y vuelto.
+    total_cubierto_cup = 0.0
+    total_cobrado_cup = 0.0
 
     for p in pagos:
         metodo = (p.get("metodo") or "").strip()
@@ -218,28 +223,36 @@ def registrar_venta(carrito, pagos, usuario, local_id,
         if tasa is None:
             tasa = inv.get_tasa(moneda)
         tasa = float(tasa)
-        monto_cup = monto * tasa
+        monto_cup_bruto = monto * tasa
 
         es_efectivo = m_conf.get("clave") == "Efectivo"
         es_credito = bool(m_conf.get("es_credito"))
 
-        if not es_efectivo:
-            # No-efectivo y Fiado: exceso máximo de 1 unidad de divisa
-            exceso = monto_cup - saldo_restante
+        if es_credito:
+            # Fiado: cubre lo que falte del saldo (nunca lo supera)
+            hay_fiado = True
+            monto_cup = min(monto_cup_bruto, saldo_restante)
+        elif es_efectivo:
+            # Efectivo: admite cualquier exceso → vuelto
+            monto_cup = monto_cup_bruto
+            total_cobrado_cup += monto_cup
+        else:
+            # No-efectivo: exceso máximo de 1 unidad de divisa
+            exceso = monto_cup_bruto - saldo_restante
             if exceso > tasa + 0.01:
                 raise ValueError(
-                    f"El monto ({monto_cup:.2f} CUP) supera el saldo "
-                    f"pendiente ({saldo_restante:.2f} CUP) por más de "
-                    f"1 {moneda} ({tasa:.2f} CUP). Revisa el monto."
+                    f"El monto ({monto_cup_bruto:.2f} CUP) supera el "
+                    f"saldo pendiente ({saldo_restante:.2f} CUP) por "
+                    f"más de 1 {moneda} ({tasa:.2f} CUP). "
+                    f"Revisa el monto."
                 )
+            monto_cup = monto_cup_bruto
+            total_cobrado_cup += monto_cup
 
-        total_pagado_cup += monto_cup
+        total_cubierto_cup += monto_cup
         saldo_restante -= monto_cup
         if saldo_restante < 0:
             saldo_restante = 0.0
-
-        if es_credito:
-            hay_fiado = True
 
         pagos_proc.append({
             "metodo": metodo,
@@ -251,25 +264,24 @@ def registrar_venta(carrito, pagos, usuario, local_id,
             "es_credito": es_credito,
         })
 
+    if total_cubierto_cup + 0.01 < total_cup:
+        raise ValueError(
+            f"Los pagos ({total_cubierto_cup:.2f} CUP) no cubren "
+            f"el total ({total_cup:.2f} CUP)"
+        )
+
     if hay_fiado and not cliente_id:
         raise ValueError(
             "Una venta con «Fiado» requiere un cliente asociado")
 
-    if not hay_fiado:
-        if total_pagado_cup + 0.01 < total_cup:
-            raise ValueError(
-                f"Los pagos ({total_pagado_cup:.2f} CUP) no cubren "
-                f"el total ({total_cup:.2f} CUP)"
-            )
-
-    vuelto_cup = max(0.0, total_pagado_cup - total_cup)
+    vuelto_cup = max(0.0, total_cobrado_cup - total_cup)
 
     if hay_fiado:
-        saldo_pendiente = max(0.0, total_cup - total_pagado_cup)
+        saldo_pendiente = max(0.0, total_cup - total_cobrado_cup)
         if saldo_pendiente <= 0.01:
             saldo_pendiente = 0.0
             estado = "pagada"
-        elif total_pagado_cup > 0.01:
+        elif total_cobrado_cup > 0.01:
             estado = "parcial"
         else:
             estado = "pendiente"
