@@ -1,22 +1,15 @@
 """
 POS — Nueva Venta.
-- Búsqueda por nombre/código + chips de categoría.
-- Lista de productos con botón "+" para agregar al carrito.
-- Carrito en bottom sheet con edición, cliente, descuento global.
-- Modal de cobro con hasta 3 pagos y pago mixto.
-- Al confirmar: registra venta + muestra ticket para compartir.
 
-Reglas de cobro (SIN casos corner):
-  · Efectivo (cualquier moneda): admite exceso → vuelto.
-  · Fiado: cubre saldo exacto. Se recorta a saldo si excede por
-    ruido de redondeo.
-  · No-efectivo (Tarjeta, Transfermóvil, Enzona, Zelle): cubre
-    saldo exacto. Se recorta a saldo si excede por ruido de
-    redondeo. NO admite vuelto.
-
-El backend (`ventas.registrar_venta`) hace los recortes por
-redondeo, así que la UI nunca tiene que bloquear por sobrantes
-de centavos. Solo bloquea si falta por cubrir.
+Reglas de cobro:
+  · Efectivo CUP: monto libre, vuelto en CUP.
+  · Cualquier pago en divisa (USD/EUR): se redondea HACIA ARRIBA
+    según `configuracion.redondeo_divisa`:
+      - entero    → 34.00 USD
+      - decimal1  → 33.7  USD
+      - decimal2  → 33.63 USD
+  · El vuelto se entrega en CUP. Nunca en la divisa.
+  · El backend valida que el exceso ≤ 1 unidad de divisa.
 """
 import flet as ft
 import math
@@ -38,61 +31,62 @@ PASO_PAGINACION = 40
 
 
 # ═══════════════════════════════════════════════════════════
-# HELPERS
+# REDONDEO DE DIVISA
 # ═══════════════════════════════════════════════════════════
 
+def _leer_redondeo_divisa() -> str:
+    """Devuelve 'entero' | 'decimal1' | 'decimal2'."""
+    try:
+        v = inv.get_config("redondeo_divisa") or "entero"
+    except Exception:
+        v = "entero"
+    if v not in ("entero", "decimal1", "decimal2"):
+        v = "entero"
+    return v
+
+
+def _redondear_divisa(monto: float, moneda: str) -> float:
+    """
+    Redondea HACIA ARRIBA un monto en divisa según la config.
+    Si moneda == CUP, no toca el monto (return round 2 dec).
+    """
+    m = (moneda or "CUP").upper()
+    if m == "CUP":
+        return round(monto, 2)
+    regla = _leer_redondeo_divisa()
+    if regla == "entero":
+        return float(math.ceil(monto))
+    if regla == "decimal1":
+        return math.ceil(monto * 10) / 10
+    if regla == "decimal2":
+        return math.ceil(monto * 100) / 100
+    return float(math.ceil(monto))
+
+
 def _es_efectivo(metodo_conf) -> bool:
-    """True si el método es Efectivo (cualquier moneda)."""
     if not metodo_conf:
         return False
     return metodo_conf.get("clave") == "Efectivo"
 
 
 def _es_efectivo_usd_eur(metodo_conf) -> bool:
-    """True si es Efectivo con moneda fija USD o EUR."""
     if not metodo_conf:
         return False
     return (metodo_conf.get("clave") == "Efectivo"
             and metodo_conf.get("moneda_fija") in ("USD", "EUR"))
 
 
-def _redondear_efectivo(monto: float, moneda: str) -> float:
-    """Efectivo: redondeo al entero superior para USD/EUR."""
-    if (moneda or "").upper() in ("USD", "EUR"):
-        return float(math.ceil(monto))
-    return round(monto, 2)
-
-
-def _redondear_no_efectivo(monto: float, moneda: str) -> float:
-    """
-    No-efectivo: redondeo hacia abajo a 2 decimales (CUP) o 4 (USD/EUR)
-    para no exceder nunca el saldo pendiente.
-    """
-    if (moneda or "").upper() in ("USD", "EUR"):
-        return math.floor(monto * 10000) / 10000
-    return math.floor(monto * 100) / 100
-
-
-def _calcular_vuelto(monto_moneda: float, tasa: float,
-                     total_cup: float) -> float:
-    """Vuelto en la moneda del pago."""
+def _calcular_vuelto_cup(monto_moneda: float, tasa: float,
+                         total_cup: float) -> float:
+    """Vuelto en CUP."""
     pagado_cup = monto_moneda * tasa
     if pagado_cup <= total_cup:
         return 0.0
-    return round((pagado_cup - total_cup) / tasa, 2)
-
-
-def _fmt_monto(v: float, moneda: str, es_efectivo_usd_eur: bool) -> str:
-    """Formato de presentación del monto según tipo."""
-    if es_efectivo_usd_eur:
-        return f"{v:.2f}"
-    if (moneda or "").upper() == "CUP":
-        return f"{v:.2f}"
-    return f"{v:.4f}"
+    return round(pagado_cup - total_cup, 2)
 
 
 # ═══════════════════════════════════════════════════════════
-# VISTA PRINCIPAL DEL POS
+# VISTA PRINCIPAL
 # ═══════════════════════════════════════════════════════════
 
 def vista_pos(app):
@@ -352,10 +346,6 @@ def vista_pos(app):
     )
 
 
-# ═══════════════════════════════════════════════════════════
-# NAV
-# ═══════════════════════════════════════════════════════════
-
 def _nav(app, indice):
     def cambiar(e):
         rutas = ["/principal", "/pos", "/dashboard",
@@ -445,10 +435,6 @@ def _vaciar(app, on_change):
         actions_alignment=ft.MainAxisAlignment.END,
     ))
 
-
-# ═══════════════════════════════════════════════════════════
-# CARRITO
-# ═══════════════════════════════════════════════════════════
 
 def _abrir_carrito(app, on_refresh_lista, on_refresh_carrito):
     page = app.page
@@ -853,12 +839,7 @@ def _fila_total(label, valor, color=None, grande=False):
     ])
 
 
-# ═══════════════════════════════════════════════════════════
-# BOTTOM SHEET DE COBRO
-# ═══════════════════════════════════════════════════════════
-
 def _bottom_sheet_cobro(contenido, page, alto_max_pct=0.92):
-    """BottomSheet pensado para contenido con expand=True."""
     h = None
     try:
         hh = getattr(page, "height", None)
@@ -882,23 +863,8 @@ def _bottom_sheet_cobro(contenido, page, alto_max_pct=0.92):
     return ft.BottomSheet(content=cont)
 
 
-# ═══════════════════════════════════════════════════════════
-# COBRO
-# ═══════════════════════════════════════════════════════════
-
 def _abrir_cobro(app, bs_carrito, rebuild_carrito,
                  on_refresh_lista, on_refresh_carrito):
-    """
-    Sheet de cobro con DOS zonas: scroll (lista+resumen) y fija
-    (botones).
-
-    El botón "Confirmar venta" se habilita cuando:
-      · Hay al menos un pago, Y
-      · falta ≤ 0.01 CUP.
-
-    No hay casos corner: los pagos no-efectivo se recortan
-    automáticamente en el backend para no generar sobrantes.
-    """
     page = app.page
     if bs_carrito is not None:
         try:
@@ -941,34 +907,41 @@ def _abrir_cobro(app, bs_carrito, rebuild_carrito,
         total_pagado_cup = sum(
             p["monto"] * p["tasa"] for p in pagos_state["pagos"]
         )
-        # Vuelto: solo si hay efectivo y hay exceso
-        efectivo_cup = 0.0
-        for p in pagos_state["pagos"]:
-            m_conf = cfg.obtener_metodo_pago(p["metodo"])
-            if _es_efectivo(m_conf):
-                efectivo_cup += p["monto"] * p["tasa"]
-
         falta = tot["total"] - total_pagado_cup
         color_falta = (es.COLOR_EXITO if falta <= 0.01
                        else es.COLOR_PELIGRO)
 
+        sobrante_cup = -falta if falta < -0.01 else 0.0
+
+        # Resumen
+        filas = [
+            _fila_total("Total venta", f"${tot['total']:,.2f}"),
+            _fila_total("Pagado",
+                        f"${total_pagado_cup:,.2f}",
+                        color=es.COLOR_EXITO),
+        ]
+        if falta > 0.01:
+            filas.append(_fila_total("Falta", f"${falta:,.2f}",
+                                      color=es.COLOR_PELIGRO,
+                                      grande=True))
+        elif sobrante_cup > 0.01:
+            filas.append(_fila_total(
+                "Vuelto al cliente (CUP)",
+                f"${sobrante_cup:,.2f}",
+                color=es.COLOR_AMBAR, grande=True))
+        else:
+            filas.append(_fila_total("Pagado exacto",
+                                      "$0.00",
+                                      color=es.COLOR_EXITO,
+                                      grande=True))
+
         zona_scroll.controls.append(ft.Container(
-            content=ft.Column([
-                _fila_total("Total venta", f"${tot['total']:,.2f}"),
-                _fila_total("Pagado",
-                            f"${total_pagado_cup:,.2f}",
-                            color=es.COLOR_EXITO),
-                _fila_total(
-                    "Falta" if falta > 0.01 else "Vuelto",
-                    f"${abs(falta):,.2f}",
-                    color=color_falta, grande=True),
-            ], spacing=6),
+            content=ft.Column(filas, spacing=6),
             padding=14,
             bgcolor=es.COLOR_SUPERFICIE_2,
             border_radius=12,
         ))
 
-        # ── Botones ──
         puede_agregar = len(pagos_state["pagos"]) < 3
         zona_fija.controls.append(ft.FilledButton(
             f"+ Agregar pago ({3 - len(pagos_state['pagos'])} restantes)",
@@ -1000,7 +973,6 @@ def _abrir_cobro(app, bs_carrito, rebuild_carrito,
                     radius=ft.BorderRadius.all(12))),
         ))
 
-        # ── Avisos ──
         if not confirmar_ok:
             if not pagos_state["pagos"]:
                 zona_fija.controls.append(ft.Text(
@@ -1143,15 +1115,9 @@ def _elegir_metodo(app, metodos, pagos_state, rebuild):
 def _agregar_pago(app, metodo, falta_cup, pagos_state, rebuild,
                   indice_existente=None):
     """
-    Diálogo para agregar/editar un pago del carrito.
-
-    · Efectivo USD/EUR: redondeo al entero superior. Vuelto OK.
-    · Efectivo CUP: redondeo a 2 decimales. Vuelto OK.
-    · No-efectivo: redondeo hacia abajo (2 dec en CUP, 4 en USD/EUR)
-      para no exceder el saldo. Sin vuelto.
-
-    El backend recorta automáticamente si hay ruido de redondeo,
-    así que nunca hay "sobrante ilegal".
+    Diálogo para agregar/editar un pago. El monto en divisa se
+    redondea HACIA ARRIBA según `redondeo_divisa`. El vuelto se
+    entrega en CUP.
     """
     from configuracion_negocio import (
         moneda_efectiva_metodo, es_credito_metodo,
@@ -1167,35 +1133,37 @@ def _agregar_pago(app, metodo, falta_cup, pagos_state, rebuild,
     moneda_inicial = moneda_fija or "CUP"
 
     es_efe = _es_efectivo(metodo)
-    es_efe_usd_eur = _es_efectivo_usd_eur(metodo)
+    es_divisa = moneda_inicial != "CUP"
 
-    # ── Autocompletado inicial ──
+    # Autocompletado
     tasa_ini = inv.get_tasa(moneda_inicial)
     if tasa_ini > 0:
         monto_ini = falta_cup / tasa_ini
-        if es_efe_usd_eur:
-            monto_ini = _redondear_efectivo(monto_ini, moneda_inicial)
-        elif es_efe:
-            monto_ini = round(monto_ini, 2)
+        if es_divisa:
+            monto_ini = _redondear_divisa(monto_ini, moneda_inicial)
         else:
-            monto_ini = _redondear_no_efectivo(monto_ini, moneda_inicial)
+            monto_ini = round(monto_ini, 2)
     else:
         monto_ini = 0.0
 
     estado = {"moneda": moneda_inicial}
 
+    def _fmt_monto(v, m):
+        if (m or "").upper() == "CUP":
+            return f"{v:.2f}"
+        return f"{v:g}"
+
     tf_monto = ft.TextField(
         label=f"Monto ({moneda_inicial})",
-        value=_fmt_monto(monto_ini, moneda_inicial, es_efe_usd_eur),
+        value=_fmt_monto(monto_ini, moneda_inicial),
         keyboard_type=ft.KeyboardType.NUMBER,
         autofocus=True,
         **es.estilo_textfield(12), height=54)
 
     contenedor_chips = ft.Row(spacing=6, wrap=True)
     lbl_info = ft.Text("", size=11, color=es.COLOR_TEXTO_SUAVE)
-    lbl_vuelto = ft.Text("", size=12, color=es.COLOR_EXITO,
+    lbl_vuelto = ft.Text("", size=13, color=es.COLOR_AMBAR,
                          weight=ft.FontWeight.BOLD)
-    lbl_nota = ft.Text("", size=10, color=es.COLOR_TEXTO_TENUE)
     error_lbl = ft.Text("", color=es.COLOR_PELIGRO, size=12)
 
     def _leer_monto():
@@ -1211,13 +1179,11 @@ def _agregar_pago(app, metodo, falta_cup, pagos_state, rebuild,
         t_nueva = inv.get_tasa(m)
         if t_antes > 0 and t_nueva > 0 and m_antes != m:
             v_nueva = v_antes * t_antes / t_nueva
-            if _es_efectivo_usd_eur(metodo):
-                v_nueva = _redondear_efectivo(v_nueva, m)
-            elif _es_efectivo(metodo):
-                v_nueva = round(v_nueva, 2)
+            if (m or "").upper() != "CUP":
+                v_nueva = _redondear_divisa(v_nueva, m)
             else:
-                v_nueva = _redondear_no_efectivo(v_nueva, m)
-            tf_monto.value = _fmt_monto(v_nueva, m, es_efe_usd_eur)
+                v_nueva = round(v_nueva, 2)
+            tf_monto.value = _fmt_monto(v_nueva, m)
             try:
                 tf_monto.update()
             except Exception:
@@ -1228,6 +1194,12 @@ def _agregar_pago(app, metodo, falta_cup, pagos_state, rebuild,
         if estado["moneda"] == m:
             return
         _convertir_moneda(m)
+        # Actualizar el label del campo al nuevo monto
+        tf_monto.label = f"Monto ({m})"
+        try:
+            tf_monto.update()
+        except Exception:
+            pass
         _rebuild_chips()
         _rec_info()
 
@@ -1264,31 +1236,15 @@ def _agregar_pago(app, metodo, falta_cup, pagos_state, rebuild,
         lbl_info.value = (f"1 {m} = {t:.2f} CUP  ·  "
                           f"equivalente: ${equivalente:,.2f} CUP  ·  "
                           f"falta: ${falta_cup:,.2f} CUP")
-        if es_efe_usd_eur:
-            vuelto = _calcular_vuelto(v, t, falta_cup)
-            if vuelto > 0.001:
-                lbl_vuelto.value = (f"Vuelto al cliente: "
-                                    f"{vuelto:.2f} {m}")
-            else:
-                lbl_vuelto.value = ""
-            lbl_nota.value = ""
-        elif _es_efectivo(metodo):
-            if equivalente > falta_cup + 0.01:
-                lbl_vuelto.value = (f"Vuelto: "
-                                    f"${equivalente - falta_cup:,.2f} CUP")
-            else:
-                lbl_vuelto.value = ""
-            lbl_nota.value = ""
+        if (m or "").upper() != "CUP" and equivalente > falta_cup + 0.01:
+            vuelto = equivalente - falta_cup
+            lbl_vuelto.value = (f"Vuelto al cliente: "
+                                f"${vuelto:,.2f} CUP (en CUP)")
         else:
             lbl_vuelto.value = ""
-            lbl_nota.value = (
-                "Método electrónico: el monto no puede superar el "
-                "saldo. El sistema ajustará automáticamente si hay "
-                "diferencia de centavos.")
         try:
             lbl_info.update()
             lbl_vuelto.update()
-            lbl_nota.update()
         except Exception:
             pass
 
@@ -1305,12 +1261,10 @@ def _agregar_pago(app, metodo, falta_cup, pagos_state, rebuild,
             error_lbl.value = "El monto debe ser mayor que 0"
             page.update()
             return
-        if es_efe_usd_eur:
-            v = _redondear_efectivo(v, m)
-        elif _es_efectivo(metodo):
-            v = round(v, 2)
+        if (m or "").upper() != "CUP":
+            v = _redondear_divisa(v, m)
         else:
-            v = _redondear_no_efectivo(v, m)
+            v = round(v, 2)
         nuevo = {
             "metodo": metodo["clave"],
             "moneda": m,
@@ -1340,7 +1294,6 @@ def _agregar_pago(app, metodo, falta_cup, pagos_state, rebuild,
             tf_monto,
             lbl_info,
             lbl_vuelto,
-            lbl_nota,
             error_lbl,
         ], tight=True, width=360, spacing=10),
         actions=[
@@ -1497,10 +1450,6 @@ def _confirmar_venta(app, pagos, on_refresh_lista, on_refresh_carrito):
     _mostrar_ticket(app, resultado["orden_id"])
 
 
-# ═══════════════════════════════════════════════════════════
-# TICKET
-# ═══════════════════════════════════════════════════════════
-
 def _mostrar_ticket(app, orden_id):
     page = app.page
     import ticket as tk
@@ -1650,4 +1599,3 @@ def _mostrar_ticket(app, orden_id):
         ],
         actions_alignment=ft.MainAxisAlignment.END,
     ))
-    
