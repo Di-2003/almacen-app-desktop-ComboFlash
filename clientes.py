@@ -173,20 +173,10 @@ def listar_ordenes_pendientes(cid) -> list[dict]:
 # ── Abonos ──
 
 def registrar_abono(orden_id, monto, moneda, metodo, usuario,
-                    tasa=None, notas=None, vuelto=0.0) -> dict:
+                    tasa=None, notas=None, vuelto=0.0,
+                    destino_sobrante="vuelto") -> dict:
     """
     Registra un abono a una orden pendiente.
-
-    - `monto`: monto BRUTO en la moneda elegida.
-    - `vuelto`: monto devuelto al cliente, en la MISMA moneda del abono.
-    - `abonos.monto_cup` guardado = monto APLICADO al saldo (neto de
-      vuelto y limitado al saldo pendiente).
-    - El exceso (bruto - vuelto - aplicado) es propina: no se registra
-      en ninguna parte pero SÍ suma al efectivo real del cajón. La
-      diferencia solo se ve si hay caja abierta (cuadre en rojo/verde).
-
-    El recálculo dispara `_recalcular_estado_orden`, que sincroniza
-    el pago Fiado con el nuevo saldo pendiente.
     """
     from inventario import get_tasa
     from ventas import _recalcular_estado_orden
@@ -198,15 +188,7 @@ def registrar_abono(orden_id, monto, moneda, metodo, usuario,
     if tasa is None:
         tasa = get_tasa(moneda)
     tasa = float(tasa)
-    monto_cup = monto * tasa
-    vuelto = float(vuelto or 0)
-    if vuelto < 0:
-        raise ValueError("El vuelto no puede ser negativo")
-    vuelto_cup = vuelto * tasa
-    if vuelto_cup > monto_cup + 0.01:
-        raise ValueError("El vuelto no puede superar el monto")
-
-    neto_cup = monto_cup - vuelto_cup
+    monto_cup_bruto = monto * tasa
 
     username = (usuario["username"]
                 if isinstance(usuario, dict) else str(usuario))
@@ -221,16 +203,39 @@ def registrar_abono(orden_id, monto, moneda, metodo, usuario,
         if saldo <= 0.01:
             raise ValueError("Esta orden no tiene saldo pendiente")
 
-        # Solo aplicamos al saldo lo necesario. El resto es propina.
-        monto_aplicado_cup = min(neto_cup, saldo)
+        monto_aplicado_cup = min(monto_cup_bruto, saldo)
+        sobrante = max(0.0, monto_cup_bruto - saldo)
+
+        p_vuelto = 0.0
+        p_propina = 0.0
+        
+        # Compatibilidad con el test viejo que manda vuelto explícito
+        if vuelto > 0:
+            p_vuelto = vuelto * tasa
+        elif sobrante > 0.01:
+            if destino_sobrante == "propina":
+                p_propina = sobrante
+            else:
+                p_vuelto = sobrante
 
         conn.execute(
             "INSERT INTO abonos(orden_id,monto,moneda,tasa,monto_cup,"
-            "metodo,fecha,usuario,notas,vuelto_cup) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?)",
+            "metodo,fecha,usuario,notas,vuelto_cup,propina_cup) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
             (orden_id, monto, moneda, tasa, monto_aplicado_cup, metodo,
-             _ahora(), username, _norm(notas), vuelto_cup)
+             _ahora(), username, _norm(notas), p_vuelto, p_propina)
         )
+
+        if p_vuelto > 0:
+            conn.execute(
+                "UPDATE ordenes_venta SET vuelto_cup = vuelto_cup + ? WHERE id=?", 
+                (p_vuelto, orden_id)
+            )
+        if p_propina > 0:
+            conn.execute(
+                "UPDATE ordenes_venta SET propina_cup = propina_cup + ? WHERE id=?", 
+                (p_propina, orden_id)
+            )
 
         _recalcular_estado_orden(conn, orden_id)
 
@@ -243,6 +248,8 @@ def registrar_abono(orden_id, monto, moneda, metodo, usuario,
         "saldo": float(o2["saldo_pendiente"]),
         "estado": o2["estado"],
         "monto_cup": monto_aplicado_cup,
+        "vuelto": p_vuelto,
+        "propina": p_propina,
     }
 
 
@@ -253,3 +260,4 @@ def listar_abonos(orden_id) -> list[dict]:
             (orden_id,)
         ).fetchall()
         return [dict(r) for r in rows]
+    

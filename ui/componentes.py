@@ -676,3 +676,29 @@ def _fila_sugerencia(item, on_pick, ocultar):
         on_click=click,
         ink=True,
     )
+    
+def dlg_destino_sobrante(page, sobrante_cup, callback):
+    """
+    Pregunta al usuario si el sobrante es vuelto o propina.
+    callback("vuelto") o callback("propina")
+    """
+    def set_vuelto(e):
+        page.pop_dialog()
+        callback("vuelto")
+    def set_propina(e):
+        page.pop_dialog()
+        callback("propina")
+    
+    page.show_dialog(ft.AlertDialog(
+        title=ft.Text("Sobrante de pago"),
+        content=ft.Column([
+            ft.Text(f"El pago supera el total por ${sobrante_cup:,.2f} CUP.", size=14, weight=ft.FontWeight.BOLD),
+            ft.Text("¿Qué desea hacer con este dinero extra?", size=13, color=es.COLOR_TEXTO_SUAVE),
+        ], tight=True, spacing=10),
+        actions=[
+            ft.TextButton("Es Vuelto al Cliente", on_click=set_vuelto, icon=ft.Icons.MONEY_OFF, style=ft.ButtonStyle(color=es.COLOR_AMBAR)),
+            ft.FilledButton("Es Propina", on_click=set_propina, icon=ft.Icons.FAVORITE, style=ft.ButtonStyle(bgcolor=es.COLOR_EXITO, color="#ffffff")),
+        ],
+        actions_alignment=ft.MainAxisAlignment.END
+    ))
+    

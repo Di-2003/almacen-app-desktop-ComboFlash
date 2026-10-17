@@ -8,6 +8,7 @@ import inventario as inv
 from ui import estilos as es
 from ui.componentes import (
     campo_busqueda, empty_state, snack, bottom_sheet, mounted,
+    dlg_destino_sobrante,
 )
 from ui._scroll import columna_scroll
 
@@ -520,18 +521,10 @@ def _confirmar_eliminar(app, cliente, on_refresh):
 
 
 def _dlg_abonar(app, cliente, rebuild, on_refresh):
-    """
-    Abonar a una orden pendiente.
-
-    - Métodos: todos menos Fiado.
-    - Chips para moneda.
-    - Si el método es Efectivo + EUR/USD → monto redondeado al
-      entero superior y aparece el bloque Propina / Vuelto CUP.
-    - Otros métodos: sin propina/vuelto (aplican directo).
-    """
     from configuracion_negocio import (
-        listar_metodos_pago, moneda_efectiva_metodo,
+        listar_metodos_pago, moneda_efectiva_metodo, es_credito_metodo,
     )
+    import ventas as ven
     page = app.page
     ordenes = cli.listar_ordenes_pendientes(cliente["id"])
     if not ordenes:
@@ -552,7 +545,7 @@ def _dlg_abonar(app, cliente, rebuild, on_refresh):
         "orden_id": str(ordenes[0]["id"]),
         "metodo": metodos[0]["clave"],
         "moneda": "CUP",
-        "propina": True,
+        "cup_objetivo": float(ordenes[0]["saldo_pendiente"]),
     }
     mf_ini = moneda_efectiva_metodo(metodos[0])
     if mf_ini:
@@ -563,344 +556,132 @@ def _dlg_abonar(app, cliente, rebuild, on_refresh):
         return float(o["saldo_pendiente"]) if o else 0.0
 
     def _metodo_conf():
-        return next((m for m in metodos
-                     if m["clave"] == estado["metodo"]), None)
-
-    def _es_efe_usd_eur_actual():
-        return _es_efectivo_usd_eur(_metodo_conf(), estado["moneda"])
+        return next((m for m in metodos if m["clave"] == estado["metodo"]), None)
 
     dd_orden = ft.Dropdown(
-        label="Orden",
-        value=estado["orden_id"],
+        label="Orden", value=estado["orden_id"],
         options=[ft.DropdownOption(
             key=str(o["id"]),
-            text=f"{o['numero_ticket']} · "
-                 f"${o['saldo_pendiente']:,.2f}")
+            text=f"{o['numero_ticket']} · ${o['saldo_pendiente']:,.2f}")
             for o in ordenes],
         **es.borde_textfield(12))
 
     contenedor_metodos = ft.Row(spacing=6, wrap=True)
     contenedor_chips = ft.Row(spacing=6, wrap=True)
 
+    tasa_ini = inv.get_tasa(estado["moneda"])
+    monto_ini = (_saldo_orden() / tasa_ini) if tasa_ini > 0 else _saldo_orden()
+    if estado["moneda"] != "CUP":
+        monto_ini = ven.redondear_divisa(monto_ini, estado["moneda"])
+    else:
+        monto_ini = round(monto_ini, 2)
+
     tf_monto = ft.TextField(
-        label="Monto",
+        label=f"Monto ({estado['moneda']})",
+        value=f"{monto_ini:g}",
         keyboard_type=ft.KeyboardType.NUMBER,
         **es.estilo_textfield(12), height=54)
 
-    tf_vuelto_cup = ft.TextField(
-        label="Vuelto al cliente (CUP)",
-        value="0",
-        keyboard_type=ft.KeyboardType.NUMBER,
-        **es.estilo_textfield(12), height=54)
-
-    contenedor_propina = ft.Column(spacing=0, tight=True)
-    contenedor_propina.visible = False
-
-    lbl_resumen = ft.Text("", size=12, color=es.COLOR_TEXTO,
-                          weight=ft.FontWeight.W_600)
-    lbl_alerta = ft.Text("", size=12, color=es.COLOR_AMBAR,
-                         weight=ft.FontWeight.BOLD)
-    tf_no = ft.TextField(label="Notas (opcional)",
-                         **es.estilo_textfield(12), height=54)
+    lbl_resumen = ft.Text("", size=12, color=es.COLOR_TEXTO, weight=ft.FontWeight.W_600)
+    lbl_vuelto = ft.Text("", size=13, color=es.COLOR_AMBAR, weight=ft.FontWeight.BOLD)
+    tf_no = ft.TextField(label="Notas (opcional)", **es.estilo_textfield(12), height=54)
     error_lbl = ft.Text("", color=es.COLOR_PELIGRO, size=12)
 
     def _leer_monto():
-        try:
-            return float((tf_monto.value or "0").replace(",", "."))
-        except ValueError:
-            return 0.0
-
-    def _leer_vuelto_cup():
-        try:
-            return float((tf_vuelto_cup.value or "0").replace(",", "."))
-        except ValueError:
-            return 0.0
-
-    # ─── BLOQUE PROPINA / VUELTO ───
-
-    def _rebuild_propina():
-        contenedor_propina.controls.clear()
-        if not _es_efe_usd_eur_actual():
-            contenedor_propina.visible = False
-            try:
-                contenedor_propina.update()
-            except Exception:
-                pass
-            return
-
-        contenedor_propina.visible = True
-
-        def chip(texto, activo, on_click):
-            return ft.Container(
-                content=ft.Text(texto, size=12,
-                                color=("#ffffff" if activo
-                                       else es.COLOR_TEXTO_SUAVE),
-                                weight=ft.FontWeight.BOLD),
-                bgcolor=es.COLOR_ACENTO if activo else es.COLOR_SUPERFICIE,
-                border=ft.Border.all(
-                    1, es.COLOR_ACENTO if activo else es.COLOR_BORDE),
-                padding=ft.Padding.symmetric(horizontal=14, vertical=10),
-                border_radius=20,
-                on_click=on_click, ink=True)
-
-        def click_propina(e):
-            estado["propina"] = True
-            tf_vuelto_cup.value = "0"
-            try:
-                tf_vuelto_cup.update()
-            except Exception:
-                pass
-            _rebuild_propina()
-            _actualizar_vuelto_visible()
-            _rec_info()
-
-        def click_vuelto(e):
-            estado["propina"] = False
-            t = inv.get_tasa(estado["moneda"])
-            sobrante_actual = max(
-                0.0, _leer_monto() * t - _saldo_orden())
-            tf_vuelto_cup.value = f"{sobrante_actual:.2f}"
-            try:
-                tf_vuelto_cup.update()
-            except Exception:
-                pass
-            _rebuild_propina()
-            _actualizar_vuelto_visible()
-            _rec_info()
-
-        es_propina = estado["propina"]
-        contenedor_propina.controls.append(ft.Row([
-            chip("Propina", es_propina, click_propina),
-            chip("Vuelto CUP", not es_propina, click_vuelto),
-        ], spacing=10))
-
-        try:
-            contenedor_propina.update()
-        except Exception:
-            pass
-
-    # ─── CHIPS MÉTODO / MONEDA ───
-
-    def _rebuild_metodos():
-        contenedor_metodos.controls.clear()
-        for m in metodos:
-            activo = estado["metodo"] == m["clave"]
-            color = es.COLOR_ACENTO if activo else es.COLOR_SUPERFICIE
-            color_txt = ("#ffffff" if activo
-                         else es.COLOR_TEXTO_SUAVE)
-            contenedor_metodos.controls.append(ft.Container(
-                content=ft.Text(m["etiqueta"], size=12,
-                                color=color_txt,
-                                weight=ft.FontWeight.BOLD),
-                bgcolor=color,
-                border=ft.Border.all(
-                    1, es.COLOR_ACENTO if activo else es.COLOR_BORDE),
-                padding=ft.Padding.symmetric(horizontal=12,
-                                             vertical=8),
-                border_radius=20,
-                on_click=lambda e, c=m["clave"]: _elegir_metodo(c),
-                ink=True))
-        try:
-            contenedor_metodos.update()
-        except Exception:
-            pass
-
-    def _rebuild_chips():
-        contenedor_chips.controls.clear()
-        m_conf = _metodo_conf()
-        if m_conf is None:
-            return
-        mon_fija = moneda_efectiva_metodo(m_conf)
-        opciones = (["CUP", "USD", "EUR"] if mon_fija is None
-                    else [mon_fija])
-        for op in opciones:
-            activo = estado["moneda"] == op
-            color = es.COLOR_ACENTO if activo else es.COLOR_SUPERFICIE
-            color_txt = ("#ffffff" if activo
-                         else es.COLOR_TEXTO_SUAVE)
-            contenedor_chips.controls.append(ft.Container(
-                content=ft.Text(op, size=12, color=color_txt,
-                                weight=ft.FontWeight.BOLD),
-                bgcolor=color,
-                border=ft.Border.all(
-                    1, es.COLOR_ACENTO if activo else es.COLOR_BORDE),
-                padding=ft.Padding.symmetric(horizontal=14,
-                                             vertical=8),
-                border_radius=20,
-                on_click=lambda e, m=op: _elegir_moneda(m),
-                ink=True))
-        try:
-            contenedor_chips.update()
-        except Exception:
-            pass
-
-    # ─── VISIBILIDAD CAMPO VUELTO CUP ───
-
-    def _actualizar_vuelto_visible():
-        m_conf = _metodo_conf()
-        es_efe_eur_usd = _es_efectivo_usd_eur(m_conf, estado["moneda"])
-        if es_efe_eur_usd:
-            visible = not estado["propina"]
-        else:
-            visible = (m_conf and m_conf.get("clave") == "Efectivo")
-
-        tf_vuelto_cup.visible = visible
-        if not visible:
-            tf_vuelto_cup.value = "0"
-        try:
-            tf_vuelto_cup.update()
-        except Exception:
-            pass
-
-    # ─── CONVERSIÓN ───
+        try: return float((tf_monto.value or "0").replace(",", "."))
+        except ValueError: return 0.0
 
     def _convertir_moneda(nueva):
-        v_antes = _leer_monto()
-        m_antes = estado["moneda"]
-        t_antes = inv.get_tasa(m_antes)
+        if nueva == estado["moneda"]: return
         t_nueva = inv.get_tasa(nueva)
-        if t_antes > 0 and t_nueva > 0 and m_antes != nueva:
-            v_nueva = v_antes * t_antes / t_nueva
-            if _es_efectivo_usd_eur(_metodo_conf(), nueva):
-                v_nueva = _redondear_efectivo(v_nueva, nueva)
+        if t_nueva > 0:
+            v_nueva = estado["cup_objetivo"] / t_nueva
+            if (nueva or "").upper() != "CUP":
+                v_nueva = ven.redondear_divisa(v_nueva, nueva)
             else:
                 v_nueva = round(v_nueva, 2)
-            tf_monto.value = f"{v_nueva:.2f}"
-            try:
-                tf_monto.update()
-            except Exception:
-                pass
+            tf_monto.value = f"{v_nueva:g}"
+            tf_monto.label = f"Monto ({nueva})"
+            try: tf_monto.update()
+            except: pass
         estado["moneda"] = nueva
 
+    def _elegir_moneda(m):
+        if estado["moneda"] == m: return
+        _convertir_moneda(m); _rebuild_chips(); _rec_info()
+
     def _elegir_metodo(c):
-        if estado["metodo"] == c:
-            return
+        if estado["metodo"] == c: return
         estado["metodo"] = c
         m_conf = _metodo_conf()
         if m_conf:
             mf = moneda_efectiva_metodo(m_conf)
             if mf and mf != estado["moneda"]:
                 _convertir_moneda(mf)
-            if _es_efectivo_usd_eur(m_conf, estado["moneda"]):
-                v = _leer_monto()
-                v_red = _redondear_efectivo(v, estado["moneda"])
-                if abs(v - v_red) > 0.001:
-                    tf_monto.value = f"{v_red:.2f}"
-                    try:
-                        tf_monto.update()
-                    except Exception:
-                        pass
-        _rebuild_metodos()
-        _rebuild_chips()
-        _rebuild_propina()
-        _actualizar_vuelto_visible()
-        _rec_info()
-
-    def _elegir_moneda(m):
-        if estado["moneda"] == m:
-            return
-        _convertir_moneda(m)
-        _rebuild_chips()
-        _rebuild_propina()
-        _actualizar_vuelto_visible()
-        _rec_info()
+        _rebuild_metodos(); _rebuild_chips(); _rec_info()
 
     def _on_orden_change(e):
         estado["orden_id"] = dd_orden.value or estado["orden_id"]
+        estado["cup_objetivo"] = _saldo_orden()
+        _convertir_moneda(estado["moneda"]) # Fuerza recálculo
         _rec_info()
 
-    dd_orden.on_change = _on_orden_change
+    def _rebuild_metodos():
+        contenedor_metodos.controls.clear()
+        for m in metodos:
+            activo = estado["metodo"] == m["clave"]
+            color = es.COLOR_ACENTO if activo else es.COLOR_SUPERFICIE
+            color_txt = "#ffffff" if activo else es.COLOR_TEXTO_SUAVE
+            contenedor_metodos.controls.append(ft.Container(
+                content=ft.Text(m["etiqueta"], size=12, color=color_txt, weight=ft.FontWeight.BOLD),
+                bgcolor=color, border=ft.Border.all(1, es.COLOR_ACENTO if activo else es.COLOR_BORDE),
+                padding=ft.Padding.symmetric(horizontal=12, vertical=8), border_radius=20,
+                on_click=lambda e, c=m["clave"]: _elegir_metodo(c), ink=True))
+        try: contenedor_metodos.update()
+        except: pass
 
-    # ─── INFO ───
+    def _rebuild_chips():
+        contenedor_chips.controls.clear()
+        m_conf = _metodo_conf()
+        if not m_conf: return
+        mon_fija = moneda_efectiva_metodo(m_conf)
+        opciones = [mon_fija] if mon_fija else ["CUP", "USD", "EUR"]
+        for op in opciones:
+            activo = estado["moneda"] == op
+            color = es.COLOR_ACENTO if activo else es.COLOR_SUPERFICIE
+            color_txt = "#ffffff" if activo else es.COLOR_TEXTO_SUAVE
+            contenedor_chips.controls.append(ft.Container(
+                content=ft.Text(op, size=12, color=color_txt, weight=ft.FontWeight.BOLD),
+                bgcolor=color, border=ft.Border.all(1, es.COLOR_ACENTO if activo else es.COLOR_BORDE),
+                padding=ft.Padding.symmetric(horizontal=14, vertical=8), border_radius=20,
+                on_click=lambda e, m=op: _elegir_moneda(m), ink=True))
+        try: contenedor_chips.update()
+        except: pass
 
     def _rec_info():
-        saldo = _saldo_orden()
         m = estado["moneda"]
         t = inv.get_tasa(m)
         v = _leer_monto()
-        m_conf = _metodo_conf()
-        es_efe_eur_usd = _es_efectivo_usd_eur(m_conf, m)
-        bruto_cup = v * t
-
-        if es_efe_eur_usd:
-            sobrante_cup = max(0.0, bruto_cup - saldo)
-
-            if estado["propina"]:
-                aplicado_cup = min(bruto_cup, saldo)
-                vuelto_cup = 0.0
-                propina_cup = sobrante_cup
-            else:
-                vuelto_cup = min(_leer_vuelto_cup(), sobrante_cup)
-                neto_cup = bruto_cup - vuelto_cup
-                aplicado_cup = min(neto_cup, saldo)
-                propina_cup = max(0.0, neto_cup - aplicado_cup)
-
-            partes = [
-                f"Recibes {v:.2f} {m} = ${bruto_cup:,.2f} CUP",
-                f"Saldo: ${saldo:,.2f}",
-                f"Aplicado: ${aplicado_cup:,.2f}",
-            ]
-            if vuelto_cup > 0.01:
-                partes.append(f"Vuelto: ${vuelto_cup:,.2f}")
-            if propina_cup > 0.01:
-                partes.append(f"Propina: ${propina_cup:,.2f}")
-            lbl_resumen.value = "  ·  ".join(partes)
-
-            if propina_cup > 0.01:
-                lbl_alerta.value = (
-                    f"💡 Sobrante de {propina_cup/t:.2f} {m} "
-                    f"(${propina_cup:,.2f} CUP) se queda como propina.")
-            else:
-                lbl_alerta.value = ""
+        saldo = _saldo_orden()
+        bruto = v * t
+        lbl_resumen.value = f"Recibes: ${bruto:,.2f} CUP · Saldo: ${saldo:,.2f}"
+        sobrante = max(0.0, bruto - saldo)
+        if sobrante > 0.01:
+            lbl_vuelto.value = f"Sobrante: ${sobrante:,.2f} CUP"
         else:
-            es_efectivo_cup = (m_conf and m_conf.get("clave") == "Efectivo"
-                               and m == "CUP")
-            vu_cup = _leer_vuelto_cup() if es_efectivo_cup else 0.0
-            neto_cup = max(0.0, bruto_cup - vu_cup)
-            aplicado_cup = min(neto_cup, saldo)
-            propina_cup = max(0.0, neto_cup - saldo)
+            lbl_vuelto.value = ""
+        try: lbl_resumen.update(); lbl_vuelto.update()
+        except: pass
 
-            partes = [
-                f"Recibes: ${bruto_cup:,.2f} CUP",
-                f"Saldo: ${saldo:,.2f}",
-                f"Aplicado: ${aplicado_cup:,.2f}",
-            ]
-            if vu_cup > 0.01:
-                partes.append(f"Vuelto: ${vu_cup:,.2f}")
-            if propina_cup > 0.01:
-                partes.append(f"Propina: ${propina_cup:,.2f}")
-            lbl_resumen.value = "  ·  ".join(partes)
-            lbl_alerta.value = ""
+    def _on_monto_editado(e):
+        try: estado["cup_objetivo"] = _leer_monto() * inv.get_tasa(estado["moneda"])
+        except: pass
+        _rec_info()
 
-        try:
-            lbl_resumen.update()
-            lbl_alerta.update()
-        except Exception:
-            pass
+    tf_monto.on_change = _on_monto_editado
+    dd_orden.on_change = _on_orden_change
 
-    tf_monto.on_change = lambda e: _rec_info()
-    tf_vuelto_cup.on_change = lambda e: _rec_info()
-
-    # ─── ARRANQUE ───
-
-    _rebuild_metodos()
-    _rebuild_chips()
-
-    _saldo = _saldo_orden()
-    _t = inv.get_tasa(estado["moneda"])
-    monto_ini = (_saldo / _t) if _t > 0 else _saldo
-    m_conf = _metodo_conf()
-    if _es_efectivo_usd_eur(m_conf, estado["moneda"]):
-        monto_ini = _redondear_efectivo(monto_ini, estado["moneda"])
-    else:
-        monto_ini = round(monto_ini, 2)
-    tf_monto.value = f"{monto_ini:.2f}"
-
-    _rebuild_propina()
-    _actualizar_vuelto_visible()
-    _rec_info()
-
-    # ─── GUARDAR ───
+    _rebuild_metodos(); _rebuild_chips(); _rec_info()
 
     def guardar(e):
         error_lbl.value = ""
@@ -911,84 +692,52 @@ def _dlg_abonar(app, cliente, rebuild, on_refresh):
             page.update()
             return
 
-        m_conf = _metodo_conf()
-        es_efe_eur_usd = _es_efectivo_usd_eur(m_conf, m)
+        if (m or "").upper() != "CUP":
+            v = ven.redondear_divisa(v, m)
+            tf_monto.value = f"{v:g}"
+            tf_monto.update()
 
-        if es_efe_eur_usd:
-            v = _redondear_efectivo(v, m)
-            t = inv.get_tasa(m)
-            if estado["propina"]:
-                vu_en_moneda = 0.0
-            else:
-                vu_cup = _leer_vuelto_cup()
-                if vu_cup < 0:
-                    error_lbl.value = "El vuelto no puede ser negativo"
-                    page.update()
-                    return
-                sobrante = max(0.0, v * t - _saldo_orden())
-                if vu_cup > sobrante + 0.01:
-                    error_lbl.value = (
-                        f"El vuelto (${vu_cup:,.2f} CUP) supera el "
-                        f"sobrante (${sobrante:,.2f} CUP).")
-                    page.update()
-                    return
-                vu_en_moneda = vu_cup / t if t > 0 else 0.0
-        else:
-            es_efectivo_cup = (m_conf and m_conf.get("clave") == "Efectivo"
-                               and m == "CUP")
-            vu_en_moneda = _leer_vuelto_cup() if es_efectivo_cup else 0.0
-            if vu_en_moneda < 0:
-                error_lbl.value = "El vuelto no puede ser negativo"
-                page.update()
-                return
+        monto_cup_bruto = v * inv.get_tasa(m)
+        sobrante = max(0.0, monto_cup_bruto - _saldo_orden())
 
-        try:
+        def _finalizar(destino=None):
             cli.registrar_abono(
                 orden_id=int(estado["orden_id"]),
-                monto=v, moneda=m, metodo=estado["metodo"],
-                usuario=app.usuario, notas=tf_no.value,
-                vuelto=vu_en_moneda)
-        except Exception as ex:
-            error_lbl.value = str(ex)
-            page.update()
-            return
-        page.pop_dialog()
-        snack(page, "Abono registrado", "ok")
-        rebuild()
-        on_refresh()
+                monto=v,
+                moneda=m,
+                metodo=estado["metodo"],
+                usuario=app.usuario,
+                notas=tf_no.value,
+                destino_sobrante=destino)
+            page.pop_dialog()
+            snack(page, "Abono registrado", "ok")
+            rebuild()
+            on_refresh()
+
+        if sobrante > 0.01:
+            page.pop_dialog()
+            dlg_destino_sobrante(page, sobrante, _finalizar)
+        else:
+            _finalizar()
 
     page.show_dialog(ft.AlertDialog(
         title=ft.Text(f"Abonar a {cliente['nombre']}"),
         content=ft.Column([
             dd_orden,
-            ft.Container(height=10),
-            ft.Text("Método", size=11,
-                    color=es.COLOR_TEXTO_SUAVE),
+            ft.Text("Método", size=11, color=es.COLOR_TEXTO_SUAVE),
             contenedor_metodos,
-            ft.Container(height=10),
-            ft.Text("Moneda", size=11,
-                    color=es.COLOR_TEXTO_SUAVE),
+            ft.Text("Moneda", size=11, color=es.COLOR_TEXTO_SUAVE),
             contenedor_chips,
-            ft.Container(height=12),
             tf_monto,
-            ft.Container(height=12),
-            contenedor_propina,
-            ft.Container(height=12),
-            tf_vuelto_cup,
-            ft.Container(height=12),
             lbl_resumen,
-            ft.Container(height=6),
-            lbl_alerta,
-            ft.Container(height=12),
+            lbl_vuelto,
             tf_no,
             error_lbl,
-        ], tight=True, width=460, spacing=4,
-            scroll=ft.ScrollMode.AUTO),
+        ], tight=True, width=460, spacing=8, scroll=ft.ScrollMode.AUTO),
         actions=[
-            ft.TextButton("Cancelar",
-                          on_click=lambda e: page.pop_dialog()),
-            ft.FilledButton("Registrar abono", on_click=guardar,
-                            style=es.estilo_boton_marca()),
+            ft.TextButton("Cancelar", on_click=lambda e: page.pop_dialog()),
+            ft.FilledButton("Registrar abono", on_click=guardar, style=es.estilo_boton_marca()),
         ],
-        actions_alignment=ft.MainAxisAlignment.END,
+        actions_alignment=ft.MainAxisAlignment.END
     ))
+

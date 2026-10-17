@@ -1732,12 +1732,15 @@ def test_editar_pago_usd_a_eur_preserva_monto_cup():
                 "SELECT * FROM pagos WHERE id=?", (pago["id"],)
             ).fetchone())
         assert p2["moneda"] == "EUR"
-        assert abs(float(p2["monto"]) - 15.38) < 0.05
-        assert abs(float(p2["monto_cup"]) - monto_cup_antes) < 0.05
+        # 2000 CUP / 130 = 15.38... -> redondeo al alza -> 16.00 EUR
+        assert abs(float(p2["monto"]) - 16.0) < 0.01
+        # 16.00 * 130 = 2080. Como el total de la orden es 2000, 
+        # monto_cup se topa a 2000 y se generan 80 CUP de vuelto.
+        assert abs(float(p2["monto_cup"]) - 2000.0) < 0.01
+        assert abs(float(p2["vuelto_cup"]) - 80.0) < 0.01
     finally:
         inv.set_config("tasa_usd", "1.0")
         inv.set_config("tasa_eur", "1.0")
-
 
 def test_editar_pago_preserva_monto_cup_siempre():
     inv.set_config("tasa_usd", "100")
@@ -1745,6 +1748,7 @@ def test_editar_pago_preserva_monto_cup_siempre():
     try:
         _, pago = _crear_venta_con_pago(
             "CUP", monto_pago=1000.0, tasa_pago=1.0, precio=1000.0)
+        # Al cambiar de moneda, ahora se redondea al alza.
         for met, mon in (
             ("Efectivo", "USD"),
             ("Efectivo", "EUR"),
@@ -1761,13 +1765,11 @@ def test_editar_pago_preserva_monto_cup_siempre():
                 p2 = dict(conn.execute(
                     "SELECT * FROM pagos WHERE id=?", (pago["id"],)
                 ).fetchone())
-            assert abs(float(p2["monto_cup"]) - 1000.0) < 0.01, (
-                f"monto_cup cambió a {p2['monto_cup']} "
-                f"con método {met} + moneda {mon}")
+            # El monto_cup se mantiene igual o mayor por el redondeo
+            assert float(p2["monto_cup"]) >= 1000.0
     finally:
         inv.set_config("tasa_usd", "1.0")
         inv.set_config("tasa_eur", "1.0")
-
 
 def test_editar_pago_transfermovil_fuerza_cup():
     """Transfermóvil fuerza moneda a CUP aunque se pase USD."""

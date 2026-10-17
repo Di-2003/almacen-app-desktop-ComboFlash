@@ -335,83 +335,41 @@ def _dlg_proveedor(app, proveedor, on_refresh):
 
 
 def _dlg_pago(app, proveedor, rebuild):
+    import ventas as ven
     page = app.page
     saldo_actual = pv.saldo_proveedor(proveedor["id"])
 
-    tf_monto = ft.TextField(
-        label="Monto",
-        value=f"{saldo_actual:.2f}" if saldo_actual > 0 else "",
-        keyboard_type=ft.KeyboardType.NUMBER,
-        autofocus=True,
-        **es.estilo_textfield(12), height=54)
-
-    dd_moneda = ft.Dropdown(
-        label="Moneda", value="CUP",
-        options=[
-            ft.DropdownOption(key="CUP", text="$  CUP"),
-            ft.DropdownOption(key="USD", text="USD$  USD"),
-            ft.DropdownOption(key="EUR", text="€  EUR"),
-        ],
-        **es.borde_textfield(12))
-
+    tf_monto = ft.TextField(label="Monto", value=f"{saldo_actual:.2f}" if saldo_actual > 0 else "", keyboard_type=ft.KeyboardType.NUMBER, autofocus=True, **es.estilo_textfield(12), height=54)
+    dd_moneda = ft.Dropdown(label="Moneda", value="CUP", options=[ft.DropdownOption(key="CUP", text="$  CUP"), ft.DropdownOption(key="USD", text="USD$  USD"), ft.DropdownOption(key="EUR", text="€  EUR")], **es.borde_textfield(12))
+    
     from configuracion_negocio import listar_metodos_pago
     metodos = listar_metodos_pago(solo_activos=True)
-    met_ops = [ft.DropdownOption(key="", text="Sin especificar")]
-    for m in metodos:
-        met_ops.append(ft.DropdownOption(
-            key=m["clave"], text=m["etiqueta"]))
-
-    dd_met = ft.Dropdown(
-        label="Método de pago",
-        value="Efectivo CUP",
-        options=met_ops,
-        **es.borde_textfield(12))
-
-    tf_no = ft.TextField(
-        label="Notas (opcional)",
-        **es.estilo_textfield(12), height=54)
-
+    met_ops = [ft.DropdownOption(key="", text="Sin especificar")] + [ft.DropdownOption(key=m["clave"], text=m["etiqueta"]) for m in metodos]
+    dd_met = ft.Dropdown(label="Método de pago", value="Efectivo CUP", options=met_ops, **es.borde_textfield(12))
+    tf_no = ft.TextField(label="Notas (opcional)", **es.estilo_textfield(12), height=54)
     error_lbl = ft.Text("", color=es.COLOR_PELIGRO, size=12)
 
     def guardar(e):
         error_lbl.value = ""
+        try: monto = float((tf_monto.value or "0").replace(",", "."))
+        except ValueError: error_lbl.value = "Monto inválido"; page.update(); return
+            
+        moneda = dd_moneda.value or "CUP"
+        # Redondear si es divisa
+        if moneda != "CUP":
+            monto = ven.redondear_divisa(monto, moneda)
+            
         try:
-            monto = float((tf_monto.value or "0").replace(",", "."))
-        except ValueError:
-            error_lbl.value = "Monto inválido"
-            page.update()
-            return
-        try:
-            pv.registrar_pago(
-                proveedor_id=proveedor["id"],
-                monto=monto,
-                moneda=dd_moneda.value or "CUP",
-                usuario=app.usuario,
-                metodo=dd_met.value or None,
-                notas=tf_no.value)
+            pv.registrar_pago(proveedor_id=proveedor["id"], monto=monto, moneda=moneda, usuario=app.usuario, metodo=dd_met.value or None, notas=tf_no.value)
         except Exception as ex:
-            error_lbl.value = str(ex)
-            page.update()
-            return
-        page.pop_dialog()
-        toast(page, "Pago registrado", "ok")
-        rebuild()
+            error_lbl.value = str(ex); page.update(); return
+            
+        page.pop_dialog(); toast(page, "Pago registrado", "ok"); rebuild()
 
     page.show_dialog(ft.AlertDialog(
         title=ft.Text(f"Pagar a {proveedor['nombre']}"),
-        content=ft.Column([
-            ft.Text(
-                f"Saldo actual: ${saldo_actual:,.2f}",
-                size=12, color=es.COLOR_TEXTO_SUAVE),
-            ft.Container(height=6),
-            tf_monto, dd_moneda, dd_met, tf_no, error_lbl,
-        ], tight=True, width=340, spacing=10,
-            scroll=ft.ScrollMode.AUTO),
-        actions=[
-            ft.TextButton("Cancelar",
-                          on_click=lambda e: page.pop_dialog()),
-            ft.FilledButton("Registrar pago", on_click=guardar,
-                            style=es.estilo_boton_marca()),
-        ],
-        actions_alignment=ft.MainAxisAlignment.END,
-    ))
+        content=ft.Column([ft.Text(f"Saldo actual: ${saldo_actual:,.2f}", size=12, color=es.COLOR_TEXTO_SUAVE), ft.Container(height=6), tf_monto, dd_moneda, dd_met, tf_no, error_lbl], tight=True, width=340, spacing=10, scroll=ft.ScrollMode.AUTO),
+        actions=[ft.TextButton("Cancelar", on_click=lambda e: page.pop_dialog()), ft.FilledButton("Registrar pago", on_click=guardar, style=es.estilo_boton_marca())],
+        actions_alignment=ft.MainAxisAlignment.END
+    ))    
+
