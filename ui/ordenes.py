@@ -477,51 +477,119 @@ def _abrir_editar_orden(app, orden_id, on_refresh=None):
 
 def _dlg_agregar_producto_orden(app, items_state, on_done):
     page = app.page
-    tf_buscar = ft.TextField(label="Buscar producto", autofocus=True, **es.estilo_textfield(12), height=54)
+    tf_buscar = ft.TextField(
+        label="Buscar producto", autofocus=True,
+        **es.estilo_textfield(12), height=54)
     lista = ft.Column(spacing=4, scroll=ft.ScrollMode.AUTO, height=280)
 
     def rebuild(q=""):
         lista.controls.clear()
         q = (q or "").strip().lower()
-        if not q: 
-            if mounted(lista): lista.update()
+        if not q:
+            if mounted(lista):
+                lista.update()
             return
         prods = inv.listar_productos(app.local_id, solo_activos=True)
-        matches = [p for p in prods if q in p["nombre"].lower() or q in (p.get("codigo") or "").lower()][:20]
+        matches = [
+            p for p in prods
+            if q in p["nombre"].lower()
+            or q in (p.get("codigo") or "").lower()
+        ][:20]
         for p in matches:
             def elegir(e, prod=p):
-                _limpiar_todos_los_dialogos(page)
-                _dlg_cantidad_producto_orden(app, prod, items_state, on_done)
-            lista.controls.append(ft.Container(content=ft.Row([ft.Column([ft.Text(p["nombre"], size=13, color=es.COLOR_TEXTO, weight=ft.FontWeight.W_600), ft.Text(f"{p.get('codigo') or '—'}  ·  Stock {inv.fmt_cantidad(p['stock'])}  ·  ${inv.fmt_precio(p['precio_unitario'])}", size=11, color=es.COLOR_TEXTO_SUAVE)], spacing=2, expand=True), ft.Icon(ft.Icons.ADD_CIRCLE, color=es.COLOR_EXITO, size=24)], spacing=8), padding=10, bgcolor=es.COLOR_SUPERFICIE_2, border_radius=8, on_click=elegir, ink=True))
-        if not matches: lista.controls.append(ft.Text("Sin coincidencias", size=12, color=es.COLOR_TEXTO_SUAVE))
-        if mounted(lista): lista.update()
+                # Cierra SOLO este diálogo (el de búsqueda) y abre
+                # el de cantidad encima del de "editar orden".
+                page.pop_dialog()
+                _dlg_cantidad_producto_orden(
+                    app, prod, items_state, on_done)
+            lista.controls.append(ft.Container(
+                content=ft.Row([
+                    ft.Column([
+                        ft.Text(p["nombre"], size=13,
+                                color=es.COLOR_TEXTO,
+                                weight=ft.FontWeight.W_600),
+                        ft.Text(
+                            f"{p.get('codigo') or '—'}  ·  "
+                            f"Stock {inv.fmt_cantidad(p['stock'])}  ·  "
+                            f"${inv.fmt_precio(p['precio_unitario'])}",
+                            size=11, color=es.COLOR_TEXTO_SUAVE),
+                    ], spacing=2, expand=True),
+                    ft.Icon(ft.Icons.ADD_CIRCLE,
+                            color=es.COLOR_EXITO, size=24),
+                ], spacing=8),
+                padding=10,
+                bgcolor=es.COLOR_SUPERFICIE_2,
+                border_radius=8,
+                on_click=elegir,
+                ink=True))
+        if not matches:
+            lista.controls.append(ft.Text(
+                "Sin coincidencias", size=12,
+                color=es.COLOR_TEXTO_SUAVE))
+        if mounted(lista):
+            lista.update()
 
     tf_buscar.on_change = lambda e: rebuild(e.control.value)
-    page.show_dialog(ft.AlertDialog(title=ft.Text("Agregar producto"), content=ft.Column([tf_buscar, lista], tight=True, width=380, spacing=10), actions=[ft.TextButton("Cancelar", on_click=lambda e: (page.pop_dialog(), _dlg_agregar_producto_orden(app, items_state, on_done)))], actions_alignment=ft.MainAxisAlignment.END))
 
+    def cancelar(e):
+        # Solo cierra este diálogo → vuelve al de "editar orden".
+        page.pop_dialog()
+
+    page.show_dialog(ft.AlertDialog(
+        title=ft.Text("Agregar producto"),
+        content=ft.Column([tf_buscar, lista],
+                          tight=True, width=380, spacing=10),
+        actions=[
+            ft.TextButton("Cancelar", on_click=cancelar),
+        ],
+        actions_alignment=ft.MainAxisAlignment.END,
+    ))
 
 def _dlg_cantidad_producto_orden(app, prod, items_state, on_done):
     page = app.page
-    tf_c = ft.TextField(label="Cantidad", value="1", keyboard_type=ft.KeyboardType.NUMBER, autofocus=True, **es.estilo_textfield(12), height=54)
+    tf_c = ft.TextField(
+        label="Cantidad", value="1",
+        keyboard_type=ft.KeyboardType.NUMBER,
+        autofocus=True,
+        **es.estilo_textfield(12), height=54)
     error_lbl = ft.Text("", color=es.COLOR_PELIGRO, size=12)
-    existente = next((it for it in items_state if it["producto_id"] == prod["id"]), None)
+    existente = next(
+        (it for it in items_state if it["producto_id"] == prod["id"]),
+        None)
 
     def guardar(e):
         error_lbl.value = ""
-        try: c = float((tf_c.value or "0").replace(",", "."))
-        except ValueError: error_lbl.value = "Cantidad inválida"; page.update(); return
-        if c <= 0: error_lbl.value = "Debe ser mayor que 0"; page.update(); return
-        
+        try:
+            c = float((tf_c.value or "0").replace(",", "."))
+        except ValueError:
+            error_lbl.value = "Cantidad inválida"
+            page.update()
+            return
+        if c <= 0:
+            error_lbl.value = "Debe ser mayor que 0"
+            page.update()
+            return
+
         if existente:
-            max_permitido = existente.get("stock_db", 0.0) + existente.get("cantidad_original", 0.0)
+            max_permitido = (
+                existente.get("stock_db", 0.0)
+                + existente.get("cantidad_original", 0.0)
+            )
             if existente["cantidad"] + c > max_permitido:
-                error_lbl.value = f"Solo hay {inv.fmt_cantidad(max_permitido - existente['cantidad'])} adicionales disponibles."
+                error_lbl.value = (
+                    f"Solo hay "
+                    f"{inv.fmt_cantidad(max_permitido - existente['cantidad'])} "
+                    f"adicionales disponibles."
+                )
                 page.update()
                 return
             existente["cantidad"] += c
         else:
             if c > prod["stock"]:
-                error_lbl.value = f"Solo hay {inv.fmt_cantidad(prod['stock'])} disponibles."
+                error_lbl.value = (
+                    f"Solo hay {inv.fmt_cantidad(prod['stock'])} "
+                    f"disponibles."
+                )
                 page.update()
                 return
             items_state.append({
@@ -532,14 +600,34 @@ def _dlg_cantidad_producto_orden(app, prod, items_state, on_done):
                 "cantidad": c,
                 "rebaja": 0.0,
                 "stock_db": prod["stock"],
-                "cantidad_original": 0.0
+                "cantidad_original": 0.0,
             })
-        _limpiar_todos_los_dialogos(page)
+
+        # Cierra SOLO este diálogo. El de "editar orden" sigue
+        # abierto y montado → rebuild() lo actualiza con el
+        # producto añadido.
+        page.pop_dialog()
         on_done()
 
-    tf_c.on_submit = guardar
-    page.show_dialog(ft.AlertDialog(title=ft.Text(f"Añadir {prod['nombre']}"), content=ft.Column([ft.Text(f"Stock: {inv.fmt_cantidad(prod['stock'])}", size=12, color=es.COLOR_TEXTO_SUAVE), tf_c, error_lbl], tight=True, width=320, spacing=10), actions=[ft.TextButton("Cancelar", on_click=lambda e: (page.pop_dialog(), _dlg_agregar_producto_orden(app, items_state, on_done))), ft.FilledButton("Añadir", on_click=guardar, style=es.estilo_boton_marca())], actions_alignment=ft.MainAxisAlignment.END))
+    def cancelar(e):
+        # Solo cierra este diálogo → vuelve al de "editar orden".
+        page.pop_dialog()
 
+    tf_c.on_submit = guardar
+    page.show_dialog(ft.AlertDialog(
+        title=ft.Text(f"Añadir {prod['nombre']}"),
+        content=ft.Column([
+            ft.Text(f"Stock: {inv.fmt_cantidad(prod['stock'])}",
+                    size=12, color=es.COLOR_TEXTO_SUAVE),
+            tf_c, error_lbl,
+        ], tight=True, width=320, spacing=10),
+        actions=[
+            ft.TextButton("Cancelar", on_click=cancelar),
+            ft.FilledButton("Añadir", on_click=guardar,
+                            style=es.estilo_boton_marca()),
+        ],
+        actions_alignment=ft.MainAxisAlignment.END,
+    ))
 
 def _dlg_editar_pagos_orden(app, orden_id, on_refresh=None):
     page = app.page
