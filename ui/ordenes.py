@@ -414,24 +414,56 @@ def _abrir_editar_orden(app, orden_id, on_refresh=None):
 
     def guardar(e):
         error_lbl.value = ""
-        if not items_state: error_lbl.value = "Debe haber al menos un ítem"; page.update(); return
-        o_actual = ven.obtener_orden(orden_id)
-        from configuracion_negocio import obtener_metodo_pago
-        pagos_reales = [p for p in o_actual["pagos"] if not (obtener_metodo_pago(p["metodo"]) or {}).get("es_credito")]
-        if not pagos_reales and not o_actual.get("abonos"): error_lbl.value = "La orden no puede quedar sin pagos. Agrega al menos uno desde el botón «Pagos»."; page.update(); return
-        tiene_fiado = any((obtener_metodo_pago(p["metodo"]) or {}).get("es_credito") for p in o_actual["pagos"])
-        if tiene_fiado and not o_actual.get("cliente_id"): error_lbl.value = "Esta orden tiene un pago Fiado pero no tiene cliente. Asígnalo desde «Pagos» → Fiado."; page.update(); return
+        if not items_state:
+            error_lbl.value = "Debe haber al menos un ítem"
+            page.update()
+            return
 
-        try: ven.editar_items_orden(orden_id=orden_id, items_nuevos=items_state, usuario=app.usuario)
-        except Exception as ex: error_lbl.value = str(ex); page.update(); return
+        o_actual = ven.obtener_orden(orden_id)
+
+        # 1) La orden debe seguir teniendo algún cobro (pago o abono)
+        try:
+            ven.validar_orden_para_guardar(orden_id)
+        except ValueError as ex:
+            error_lbl.value = str(ex)
+            page.update()
+            return
+
+        # 2) Si hay un pago Fiado, la orden debe tener cliente
+        from configuracion_negocio import obtener_metodo_pago
+        tiene_fiado = any(
+            (obtener_metodo_pago(p["metodo"]) or {}).get("es_credito")
+            for p in o_actual["pagos"]
+        )
+        if tiene_fiado and not o_actual.get("cliente_id"):
+            error_lbl.value = (
+                "Esta orden tiene un pago Fiado pero no tiene cliente. "
+                "Asígnalo desde «Pagos» → Fiado."
+            )
+            page.update()
+            return
+
+        try:
+            ven.editar_items_orden(
+                orden_id=orden_id,
+                items_nuevos=items_state,
+                usuario=app.usuario,
+            )
+        except Exception as ex:
+            error_lbl.value = str(ex)
+            page.update()
+            return
 
         _limpiar_todos_los_dialogos(page)
+
         async def _reabrir():
             import asyncio
             await asyncio.sleep(0.15)
             snack(page, "Orden actualizada", "ok")
-            if on_refresh: on_refresh()
+            if on_refresh:
+                on_refresh()
             ver_orden_detalle(app, orden_id, on_refresh=on_refresh)
+
         page.run_task(_reabrir)
 
     rebuild()
@@ -511,7 +543,9 @@ def _dlg_cantidad_producto_orden(app, prod, items_state, on_done):
 
 def _dlg_editar_pagos_orden(app, orden_id, on_refresh=None):
     page = app.page
-    from configuracion_negocio import listar_metodos_pago, obtener_metodo_pago
+    from configuracion_negocio import (
+        listar_metodos_pago, obtener_metodo_pago,
+    )
     metodos = listar_metodos_pago(solo_activos=True)
     lista_col = ft.Column(spacing=8, tight=True)
     resumen_lbl = ft.Text("", size=12, color=es.COLOR_TEXTO_SUAVE)
@@ -524,35 +558,98 @@ def _dlg_editar_pagos_orden(app, orden_id, on_refresh=None):
         lista_col.controls.clear()
         o = ven.obtener_orden(orden_id)
         if o:
-            pagos_reales = [p for p in o["pagos"] if not _es_credito(p["metodo"])]
-            pagos_credito = [p for p in o["pagos"] if _es_credito(p["metodo"])]
+            pagos_reales = [
+                p for p in o["pagos"] if not _es_credito(p["metodo"])
+            ]
+            pagos_credito = [
+                p for p in o["pagos"] if _es_credito(p["metodo"])
+            ]
             if pagos_reales:
-                lista_col.controls.append(ft.Text("Pagos", size=11, color=es.COLOR_TEXTO_TENUE, weight=ft.FontWeight.BOLD))
-                for p in pagos_reales: lista_col.controls.append(_fila_pago_edit(app, p, metodos, rebuild))
+                lista_col.controls.append(ft.Text(
+                    "Pagos", size=11,
+                    color=es.COLOR_TEXTO_TENUE,
+                    weight=ft.FontWeight.BOLD))
+                for p in pagos_reales:
+                    lista_col.controls.append(
+                        _fila_pago_edit(app, p, metodos, rebuild))
             if o["abonos"]:
                 lista_col.controls.append(ft.Container(height=4))
-                lista_col.controls.append(ft.Text("Abonos", size=11, color=es.COLOR_TEXTO_TENUE, weight=ft.FontWeight.BOLD))
-                for a in o["abonos"]: lista_col.controls.append(_fila_abono(a))
+                lista_col.controls.append(ft.Text(
+                    "Abonos", size=11,
+                    color=es.COLOR_TEXTO_TENUE,
+                    weight=ft.FontWeight.BOLD))
+                for a in o["abonos"]:
+                    lista_col.controls.append(_fila_abono(a))
             if pagos_credito:
                 lista_col.controls.append(ft.Container(height=4))
-                lista_col.controls.append(ft.Text("Fiado", size=11, color=es.COLOR_TEXTO_TENUE, weight=ft.FontWeight.BOLD))
-                for p in pagos_credito: lista_col.controls.append(_fila_pago_edit(app, p, metodos, rebuild))
-            if not (pagos_reales or pagos_credito or o["abonos"]): lista_col.controls.append(ft.Text("Sin movimientos registrados.", size=12, color=es.COLOR_TEXTO_SUAVE))
-            
-            pagado = sum(float(x["monto_cup"] or 0) for x in pagos_reales) + sum(float(x["monto_cup"] or 0) for x in o["abonos"])
+                lista_col.controls.append(ft.Text(
+                    "Fiado", size=11,
+                    color=es.COLOR_TEXTO_TENUE,
+                    weight=ft.FontWeight.BOLD))
+                for p in pagos_credito:
+                    lista_col.controls.append(
+                        _fila_pago_edit(app, p, metodos, rebuild))
+            if not (pagos_reales or pagos_credito or o["abonos"]):
+                lista_col.controls.append(ft.Text(
+                    "Sin movimientos registrados. "
+                    "Agrega un pago antes de cerrar.",
+                    size=12, color=es.COLOR_PELIGRO,
+                    weight=ft.FontWeight.BOLD))
+
+            pagado = (
+                sum(float(x["monto_cup"] or 0) for x in pagos_reales)
+                + sum(float(x["monto_cup"] or 0) for x in o["abonos"])
+            )
             total = float(o["total"] or 0)
             saldo = max(0.0, total - pagado)
             vuelto = max(0.0, pagado - total)
-            resumen_lbl.value = f"Total orden: ${total:,.2f}   ·   Cobrado: ${pagado:,.2f}   ·   Saldo: ${saldo:,.2f}" + (f"   ·   Vuelto: ${vuelto:,.2f}" if vuelto > 0.01 else "")
+            resumen_lbl.value = (
+                f"Total orden: ${total:,.2f}   ·   "
+                f"Cobrado: ${pagado:,.2f}   ·   "
+                f"Saldo: ${saldo:,.2f}"
+                + (f"   ·   Vuelto: ${vuelto:,.2f}"
+                   if vuelto > 0.01 else "")
+            )
         else:
-            lista_col.controls.append(ft.Text("Sin pagos registrados.", size=12, color=es.COLOR_TEXTO_SUAVE))
+            lista_col.controls.append(ft.Text(
+                "Sin pagos registrados.", size=12,
+                color=es.COLOR_TEXTO_SUAVE))
             resumen_lbl.value = ""
-        try: lista_col.update(); resumen_lbl.update()
-        except: pass
+        try:
+            lista_col.update()
+            resumen_lbl.update()
+        except Exception:
+            pass
 
-    def agregar(e): _dlg_agregar_pago_orden(app, orden_id, metodos, None, rebuild)
+    def agregar(e):
+        _dlg_agregar_pago_orden(app, orden_id, metodos, None, rebuild)
 
     def _cerrar(e):
+        """
+        Valida que la orden siga teniendo cobros (pago o abono) antes
+        de cerrar. Si el usuario borró el ÚLTIMO pago, no permitir
+        cerrar: pedirle que agregue uno nuevo o anule la orden.
+        """
+        try:
+            ven.validar_orden_para_guardar(orden_id)
+        except ValueError:
+            page.show_dialog(ft.AlertDialog(
+                title=ft.Text("Orden sin pagos"),
+                content=ft.Text(
+                    "La orden no tiene ningún pago ni abono.\n\n"
+                    "Agrega al menos un pago antes de cerrar, "
+                    "o usa «Anular» desde el detalle de la orden "
+                    "si ya no se va a cobrar.",
+                    size=13, color=es.COLOR_TEXTO),
+                actions=[
+                    ft.FilledButton(
+                        "Entendido",
+                        on_click=lambda ev: page.pop_dialog(),
+                        style=es.estilo_boton_marca()),
+                ],
+                actions_alignment=ft.MainAxisAlignment.END,
+            ))
+            return
         if on_refresh:
             on_refresh()
         else:
@@ -561,11 +658,30 @@ def _dlg_editar_pagos_orden(app, orden_id, on_refresh=None):
     rebuild()
     page.show_dialog(ft.AlertDialog(
         title=ft.Text("Editar pagos"),
-        content=ft.Column([ft.Text("Solo puedes cambiar método y moneda. El monto se recalcula automáticamente para no descuadrar la caja.", size=12, color=es.COLOR_TEXTO_SUAVE), ft.Container(height=6), lista_col, ft.Divider(height=1, color=es.COLOR_BORDE), resumen_lbl, ft.Container(height=6), ft.FilledButton("Agregar pago", icon=ft.Icons.ADD, on_click=agregar, width=10000, height=42, style=es.estilo_boton_marca())], tight=True, width=440, spacing=8, scroll=ft.ScrollMode.AUTO),
-        actions=[ft.FilledButton("Cerrar", on_click=_cerrar, style=es.estilo_boton_marca())],
+        content=ft.Column([
+            ft.Text(
+                "Cambia método y moneda, o edita el monto. "
+                "El monto se recalcula automáticamente para no "
+                "descuadrar la caja.",
+                size=12, color=es.COLOR_TEXTO_SUAVE),
+            ft.Container(height=6),
+            lista_col,
+            ft.Divider(height=1, color=es.COLOR_BORDE),
+            resumen_lbl,
+            ft.Container(height=6),
+            ft.FilledButton(
+                "Agregar pago", icon=ft.Icons.ADD,
+                on_click=agregar, width=10000, height=42,
+                style=es.estilo_boton_marca()),
+        ], tight=True, width=440, spacing=8,
+            scroll=ft.ScrollMode.AUTO),
+        actions=[
+            ft.FilledButton(
+                "Cerrar", on_click=_cerrar,
+                style=es.estilo_boton_marca()),
+        ],
         actions_alignment=ft.MainAxisAlignment.END,
     ))
-
 
 def _fila_abono(a):
     moneda, monto, monto_cup, tasa = (a.get("moneda") or "CUP").upper(), float(a.get("monto") or 0), float(a.get("monto_cup") or 0), float(a.get("tasa") or 1.0)
@@ -595,117 +711,343 @@ def _fila_pago_edit(app, p, metodos, on_refresh):
 
 
 def _dlg_editar_pago(app, p, metodos, on_refresh):
-    from configuracion_negocio import moneda_efectiva_metodo, es_credito_metodo
+    from configuracion_negocio import (
+        moneda_efectiva_metodo, es_credito_metodo,
+    )
     page = app.page
-    monto_cup = float(p["monto_cup"] or 0)
-    estado = {"metodo": p["metodo"], "moneda": (p["moneda"] or "CUP").upper()}
+    monto_cup_actual = float(p["monto_cup"] or 0)
+    if monto_cup_actual <= 0.001:
+        # Fallback para pagos con monto_cup corrupto
+        monto_cup_actual = (
+            float(p["monto"] or 0) * float(p["tasa"] or 1.0)
+        )
+    estado = {
+        "metodo": p["metodo"],
+        "moneda": (p["moneda"] or "CUP").upper(),
+        "monto_cup_objetivo": monto_cup_actual,
+    }
     _o = ven.obtener_orden(p["orden_id"])
     cliente_holder = {"id": _o.get("cliente_id") if _o else None}
-    
-    contenedor_metodos, contenedor_chips, contenedor_cliente = ft.Row(spacing=6, wrap=True), ft.Row(spacing=6, wrap=True), ft.Container(visible=False)
-    tf_monto = ft.TextField(label="Monto", value=f"{float(p['monto']):.2f}", read_only=True, **es.estilo_textfield(12), height=54)
-    lbl_info, error_lbl = ft.Text("", size=11, color=es.COLOR_TEXTO_SUAVE), ft.Text("", color=es.COLOR_PELIGRO, size=12)
+
+    contenedor_metodos = ft.Row(spacing=6, wrap=True)
+    contenedor_chips = ft.Row(spacing=6, wrap=True)
+    contenedor_cliente = ft.Container(visible=False)
+
+    tf_monto = ft.TextField(
+        label=f"Monto ({estado['moneda']})",
+        value=f"{float(p['monto']):.2f}",
+        keyboard_type=ft.KeyboardType.NUMBER,
+        **es.estilo_textfield(12), height=54,
+    )
+    lbl_info = ft.Text("", size=11, color=es.COLOR_TEXTO_SUAVE)
+    lbl_vuelto = ft.Text("", size=12, color=es.COLOR_AMBAR,
+                          weight=ft.FontWeight.BOLD)
+    error_lbl = ft.Text("", color=es.COLOR_PELIGRO, size=12)
+
+    def _leer_monto():
+        try:
+            return float((tf_monto.value or "0").replace(",", "."))
+        except ValueError:
+            return 0.0
+
+    def _refrescar_monto():
+        """Renderiza monto en la moneda actual DESDE el objetivo CUP."""
+        t = inv.get_tasa(estado["moneda"])
+        if t <= 0:
+            return
+        v = estado["monto_cup_objetivo"] / t
+        if estado["moneda"] != "CUP":
+            v = ven.redondear_divisa(v, estado["moneda"])
+            tf_monto.value = f"{v:g}"
+        else:
+            v = round(v, 2)
+            tf_monto.value = f"{v:.2f}"
+        tf_monto.label = f"Monto ({estado['moneda']})"
+        try:
+            tf_monto.update()
+        except Exception:
+            pass
+
+    def _rec_info():
+        m = estado["moneda"]
+        t = inv.get_tasa(m)
+        v = _leer_monto()
+        cup = v * t
+        lbl_info.value = (
+            f"1 {m} = {t:.2f} CUP  ·  equivalente: "
+            f"${cup:,.2f} CUP"
+        )
+        # Vuelto/propina si el monto supera el saldo sin este pago
+        o2 = ven.obtener_orden(p["orden_id"])
+        if o2:
+            otros = sum(
+                float(x["monto_cup"] or 0)
+                for x in o2["pagos"] if x["id"] != p["id"]
+            )
+            abonos = sum(
+                float(x["monto_cup"] or 0) for x in o2["abonos"]
+            )
+            total = float(o2["total"] or 0)
+            saldo_sin_este = max(0.0, total - otros - abonos)
+            sobrante = max(0.0, cup - saldo_sin_este)
+            if sobrante > 0.01:
+                lbl_vuelto.value = (
+                    f"Sobrante: ${sobrante:,.2f} CUP "
+                    f"(vuelto o propina)"
+                )
+            else:
+                lbl_vuelto.value = ""
+        try:
+            lbl_info.update()
+            lbl_vuelto.update()
+        except Exception:
+            pass
+
+    def _on_monto_cambiado(e):
+        # ÚNICO lugar donde se actualiza el objetivo.
+        try:
+            t = inv.get_tasa(estado["moneda"])
+            estado["monto_cup_objetivo"] = _leer_monto() * t
+        except Exception:
+            pass
+        _rec_info()
+
+    tf_monto.on_change = _on_monto_cambiado
 
     def _rebuild_cliente():
-        m_conf = next((m for m in metodos if m["clave"] == estado["metodo"]), None)
-        if m_conf is None or not es_credito_metodo(m_conf): contenedor_cliente.visible = False; return
+        m_conf = next(
+            (m for m in metodos if m["clave"] == estado["metodo"]),
+            None,
+        )
+        if m_conf is None or not es_credito_metodo(m_conf):
+            contenedor_cliente.visible = False
+            return
         contenedor_cliente.visible = True
         cid = cliente_holder["id"]
         if cid:
             c = cli.obtener_cliente(cid)
-            contenedor_cliente.content = ft.Row([ft.Icon(ft.Icons.PERSON, color=es.COLOR_EXITO, size=20), ft.Column([ft.Text("Cliente", size=10, color=es.COLOR_TEXTO_TENUE), ft.Text(c["nombre"] if c else "Cliente desconocido", size=13, color=es.COLOR_TEXTO, weight=ft.FontWeight.W_600)], spacing=0, expand=True), ft.TextButton("Cambiar", icon=ft.Icons.SWAP_HORIZ, on_click=lambda e: _elegir_cliente())], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER)
-            contenedor_cliente.bgcolor = es.COLOR_EXITO_SUAVE; contenedor_cliente.border = ft.Border.all(1, es.COLOR_EXITO)
+            contenedor_cliente.content = ft.Row([
+                ft.Icon(ft.Icons.PERSON, color=es.COLOR_EXITO, size=20),
+                ft.Column([
+                    ft.Text("Cliente", size=10,
+                            color=es.COLOR_TEXTO_TENUE),
+                    ft.Text(
+                        c["nombre"] if c else "Cliente desconocido",
+                        size=13, color=es.COLOR_TEXTO,
+                        weight=ft.FontWeight.W_600,
+                    ),
+                ], spacing=0, expand=True),
+                ft.TextButton(
+                    "Cambiar", icon=ft.Icons.SWAP_HORIZ,
+                    on_click=lambda e: _elegir_cliente(),
+                ),
+            ], spacing=8,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER)
+            contenedor_cliente.bgcolor = es.COLOR_EXITO_SUAVE
+            contenedor_cliente.border = ft.Border.all(
+                1, es.COLOR_EXITO)
         else:
-            contenedor_cliente.content = ft.Row([ft.Icon(ft.Icons.WARNING_AMBER, color=es.COLOR_AMBAR, size=20), ft.Text("Sin cliente. Selecciona o crea uno.", size=12, color=es.COLOR_TEXTO, expand=True), ft.TextButton("Elegir", icon=ft.Icons.PERSON_SEARCH, on_click=lambda e: _elegir_cliente())], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER)
-            contenedor_cliente.bgcolor = es.COLOR_AMBAR_SUAVE; contenedor_cliente.border = ft.Border.all(1, es.COLOR_AMBAR)
-        contenedor_cliente.padding = 10; contenedor_cliente.border_radius = 10
-        try: contenedor_cliente.update()
-        except: pass
+            contenedor_cliente.content = ft.Row([
+                ft.Icon(ft.Icons.WARNING_AMBER,
+                        color=es.COLOR_AMBAR, size=20),
+                ft.Text("Sin cliente. Selecciona o crea uno.",
+                        size=12, color=es.COLOR_TEXTO, expand=True),
+                ft.TextButton(
+                    "Elegir", icon=ft.Icons.PERSON_SEARCH,
+                    on_click=lambda e: _elegir_cliente(),
+                ),
+            ], spacing=8,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER)
+            contenedor_cliente.bgcolor = es.COLOR_AMBAR_SUAVE
+            contenedor_cliente.border = ft.Border.all(
+                1, es.COLOR_AMBAR)
+        contenedor_cliente.padding = 10
+        contenedor_cliente.border_radius = 10
+        try:
+            contenedor_cliente.update()
+        except Exception:
+            pass
 
     def _on_cliente_actualizado():
         _o2 = ven.obtener_orden(p["orden_id"])
         cliente_holder["id"] = _o2.get("cliente_id") if _o2 else None
         _rebuild_cliente()
 
-    def _elegir_cliente(): _modal_cliente_orden(app, p["orden_id"], _on_cliente_actualizado)
+    def _elegir_cliente():
+        _modal_cliente_orden(app, p["orden_id"], _on_cliente_actualizado)
 
     def _elegir_metodo(met):
-        if estado["metodo"] == met: return
+        if estado["metodo"] == met:
+            return
+        # ⚠️ NO llamar _actualizar_objetivo aquí.
+        # El objetivo (CUP) es invariante hasta que el usuario edite
+        # el monto explícitamente.
         estado["metodo"] = met
-        m_conf = next((m for m in metodos if m["clave"] == met), None)
-        if m_conf is None: return
-        if es_credito_metodo(m_conf): estado["moneda"] = "CUP"
+        m_conf = next(
+            (m for m in metodos if m["clave"] == met), None
+        )
+        if m_conf is None:
+            return
+        if es_credito_metodo(m_conf):
+            estado["moneda"] = "CUP"
         else:
             mf = moneda_efectiva_metodo(m_conf)
-            if mf: estado["moneda"] = mf
-        _rebuild_metodos(); _rebuild_chips(); _rebuild_cliente(); _refrescar_monto(); _rec_info()
+            if mf:
+                estado["moneda"] = mf
+        _rebuild_metodos()
+        _rebuild_chips()
+        _rebuild_cliente()
+        _refrescar_monto()
+        _rec_info()
 
     def _elegir_moneda(m):
-        if estado["moneda"] == m: return
+        if estado["moneda"] == m:
+            return
+        # ⚠️ NO llamar _actualizar_objetivo aquí.
+        # Si lo hiciéramos, el objetivo crecería en cada ciclo
+        # USD→EUR→USD→… por el redondeo al alza del campo.
         estado["moneda"] = m
-        _rebuild_chips(); _refrescar_monto(); _rec_info()
+        _refrescar_monto()
+        _rebuild_chips()
+        _rec_info()
 
     def _rebuild_metodos():
         contenedor_metodos.controls.clear()
         for m in metodos:
             activo = estado["metodo"] == m["clave"]
-            contenedor_metodos.controls.append(ft.Container(content=ft.Text(m["etiqueta"], size=12, color="#ffffff" if activo else es.COLOR_TEXTO_SUAVE, weight=ft.FontWeight.BOLD), bgcolor=es.COLOR_ACENTO if activo else es.COLOR_SUPERFICIE, border=ft.Border.all(1, es.COLOR_ACENTO if activo else es.COLOR_BORDE), padding=ft.Padding.symmetric(horizontal=12, vertical=8), border_radius=20, on_click=lambda e, c=m["clave"]: _elegir_metodo(c), ink=True))
-        try: contenedor_metodos.update()
-        except: pass
+            contenedor_metodos.controls.append(ft.Container(
+                content=ft.Text(
+                    m["etiqueta"], size=12,
+                    color=("#ffffff" if activo
+                           else es.COLOR_TEXTO_SUAVE),
+                    weight=ft.FontWeight.BOLD,
+                ),
+                bgcolor=(es.COLOR_ACENTO if activo
+                         else es.COLOR_SUPERFICIE),
+                border=ft.Border.all(
+                    1, es.COLOR_ACENTO if activo
+                    else es.COLOR_BORDE),
+                padding=ft.Padding.symmetric(
+                    horizontal=12, vertical=8),
+                border_radius=20,
+                on_click=lambda e, c=m["clave"]: _elegir_metodo(c),
+                ink=True,
+            ))
+        try:
+            contenedor_metodos.update()
+        except Exception:
+            pass
 
     def _rebuild_chips():
         contenedor_chips.controls.clear()
-        m_conf = next((m for m in metodos if m["clave"] == estado["metodo"]), None)
-        if m_conf is None: return
+        m_conf = next(
+            (m for m in metodos if m["clave"] == estado["metodo"]),
+            None,
+        )
+        if m_conf is None:
+            return
         mon_fija = moneda_efectiva_metodo(m_conf)
         if es_credito_metodo(m_conf):
-            contenedor_chips.controls.append(ft.Container(content=ft.Text("Crédito — sin moneda", size=12, color=es.COLOR_TEXTO_SUAVE), padding=ft.Padding.symmetric(horizontal=12, vertical=8), bgcolor=es.COLOR_SUPERFICIE_2, border_radius=20))
-            try: contenedor_chips.update()
-            except: pass
+            contenedor_chips.controls.append(ft.Container(
+                content=ft.Text("Crédito — sin moneda",
+                                size=12,
+                                color=es.COLOR_TEXTO_SUAVE),
+                padding=ft.Padding.symmetric(
+                    horizontal=12, vertical=8),
+                bgcolor=es.COLOR_SUPERFICIE_2,
+                border_radius=20,
+            ))
+            try:
+                contenedor_chips.update()
+            except Exception:
+                pass
             return
         opciones = [mon_fija] if mon_fija else ["CUP", "USD", "EUR"]
         for op in opciones:
             activo = estado["moneda"] == op
-            contenedor_chips.controls.append(ft.Container(content=ft.Text(op, size=12, color="#ffffff" if activo else es.COLOR_TEXTO_SUAVE, weight=ft.FontWeight.BOLD), bgcolor=es.COLOR_ACENTO if activo else es.COLOR_SUPERFICIE, border=ft.Border.all(1, es.COLOR_ACENTO if activo else es.COLOR_BORDE), padding=ft.Padding.symmetric(horizontal=14, vertical=8), border_radius=20, on_click=lambda e, m=op: _elegir_moneda(m), ink=True))
-        try: contenedor_chips.update()
-        except: pass
+            contenedor_chips.controls.append(ft.Container(
+                content=ft.Text(
+                    op, size=12,
+                    color=("#ffffff" if activo
+                           else es.COLOR_TEXTO_SUAVE),
+                    weight=ft.FontWeight.BOLD,
+                ),
+                bgcolor=(es.COLOR_ACENTO if activo
+                         else es.COLOR_SUPERFICIE),
+                border=ft.Border.all(
+                    1, es.COLOR_ACENTO if activo
+                    else es.COLOR_BORDE),
+                padding=ft.Padding.symmetric(
+                    horizontal=14, vertical=8),
+                border_radius=20,
+                on_click=lambda e, mm=op: _elegir_moneda(mm),
+                ink=True,
+            ))
+        try:
+            contenedor_chips.update()
+        except Exception:
+            pass
 
-    def _refrescar_monto():
-        m = estado["moneda"]
-        t = inv.get_tasa(m)
-        tf_monto.value = f"{(monto_cup / t if t > 0 else 0.0):.2f}"
-        try: tf_monto.update()
-        except: pass
-
-    def _rec_info():
-        m, t = estado["moneda"], inv.get_tasa(estado["moneda"])
-        lbl_info.value = f"1 {m} = {t:.2f} CUP  ·  equivalente fijo: ${monto_cup:,.2f} CUP"
-        try: lbl_info.update()
-        except: pass
-
-    _rebuild_metodos(); _rebuild_chips(); _rebuild_cliente(); _refrescar_monto(); _rec_info()
+    _rebuild_metodos()
+    _rebuild_chips()
+    _rebuild_cliente()
+    _refrescar_monto()
+    _rec_info()
 
     def guardar(e):
         error_lbl.value = ""
-        m_conf = next((m for m in metodos if m["clave"] == estado["metodo"]), None)
-        if m_conf is None: error_lbl.value = "Selecciona un método"; page.update(); return
-        if es_credito_metodo(m_conf) and not cliente_holder["id"]: error_lbl.value = "Fiado requiere un cliente. Selecciona o crea uno."; page.update(); return
-        
-        monto_cup_actual = float(p["monto_cup"] or 0)
-        t_nueva = inv.get_tasa(estado["moneda"])
-        monto_bruto_original = float(p["monto"] or 0) * float(p["tasa"] or 1.0)
-        monto_bruto = monto_bruto_original / t_nueva
-        
-        if estado["moneda"] != "CUP": monto_bruto = ven.redondear_divisa(monto_bruto, estado["moneda"])
-        else: monto_bruto = round(monto_bruto, 2)
-        
-        nuevo_monto_cup = monto_bruto * t_nueva
-        sobrante = max(0.0, nuevo_monto_cup - monto_cup_actual)
+        m_conf = next(
+            (m for m in metodos if m["clave"] == estado["metodo"]),
+            None,
+        )
+        if m_conf is None:
+            error_lbl.value = "Selecciona un método"
+            page.update()
+            return
+        if es_credito_metodo(m_conf) and not cliente_holder["id"]:
+            error_lbl.value = (
+                "Fiado requiere un cliente. Selecciona o crea uno."
+            )
+            page.update()
+            return
+
+        monto_ingresado = _leer_monto()
+        if monto_ingresado <= 0:
+            error_lbl.value = "El monto debe ser mayor que 0"
+            page.update()
+            return
+
+        cup_bruto = monto_ingresado * inv.get_tasa(estado["moneda"])
+        o2 = ven.obtener_orden(p["orden_id"])
+        otros = 0.0
+        abonos = 0.0
+        total = 0.0
+        if o2:
+            otros = sum(
+                float(x["monto_cup"] or 0)
+                for x in o2["pagos"] if x["id"] != p["id"]
+            )
+            abonos = sum(
+                float(x["monto_cup"] or 0) for x in o2["abonos"]
+            )
+            total = float(o2["total"] or 0)
+        saldo_sin_este = max(0.0, total - otros - abonos)
+        sobrante = max(0.0, cup_bruto - saldo_sin_este)
 
         def _finalizar(destino=None):
-            try: ven.editar_pago(pago_id=p["id"], nuevo_metodo=estado["metodo"], nueva_moneda=estado["moneda"], usuario=app.usuario, destino_sobrante=destino)
-            except Exception as ex: error_lbl.value = str(ex); page.update(); return
-            
+            try:
+                ven.editar_pago(
+                    pago_id=p["id"],
+                    nuevo_metodo=estado["metodo"],
+                    nueva_moneda=estado["moneda"],
+                    usuario=app.usuario,
+                    destino_sobrante=destino,
+                    nuevo_monto=monto_ingresado,
+                )
+            except Exception as ex:
+                error_lbl.value = str(ex)
+                page.update()
+                return
             page.pop_dialog()
             snack(page, "Pago actualizado", "ok")
             on_refresh()
@@ -718,11 +1060,34 @@ def _dlg_editar_pago(app, p, metodos, on_refresh):
 
     page.show_dialog(ft.AlertDialog(
         title=ft.Text("Editar pago"),
-        content=ft.Column([ft.Text("Método", size=11, color=es.COLOR_TEXTO_SUAVE), contenedor_metodos, ft.Container(height=4), ft.Text("Moneda", size=11, color=es.COLOR_TEXTO_SUAVE), contenedor_chips, ft.Container(height=4), contenedor_cliente, tf_monto, lbl_info, error_lbl], tight=True, width=380, spacing=8, scroll=ft.ScrollMode.AUTO),
-        actions=[ft.TextButton("Cancelar", on_click=lambda e: page.pop_dialog()), ft.FilledButton("Guardar", on_click=guardar, style=es.estilo_boton_marca())],
+        content=ft.Column([
+            ft.Text("Método", size=11,
+                    color=es.COLOR_TEXTO_SUAVE),
+            contenedor_metodos,
+            ft.Container(height=4),
+            ft.Text("Moneda", size=11,
+                    color=es.COLOR_TEXTO_SUAVE),
+            contenedor_chips,
+            ft.Container(height=4),
+            contenedor_cliente,
+            tf_monto,
+            lbl_info,
+            lbl_vuelto,
+            error_lbl,
+        ], tight=True, width=400, spacing=8,
+            scroll=ft.ScrollMode.AUTO),
+        actions=[
+            ft.TextButton(
+                "Cancelar",
+                on_click=lambda e: page.pop_dialog(),
+            ),
+            ft.FilledButton(
+                "Guardar", on_click=guardar,
+                style=es.estilo_boton_marca(),
+            ),
+        ],
         actions_alignment=ft.MainAxisAlignment.END,
     ))
-
 
 def _dlg_agregar_pago_orden(app, orden_id, metodos, total_ui=None, on_refresh=None):
     from configuracion_negocio import moneda_efectiva_metodo, es_credito_metodo
@@ -896,12 +1261,52 @@ def _dlg_agregar_pago_orden(app, orden_id, metodos, total_ui=None, on_refresh=No
 
 def _confirmar_eliminar_pago(app, p, on_refresh):
     page = app.page
-    def hacer(e):
-        try: ven.eliminar_pago(p["id"], app.usuario)
-        except Exception as ex: snack(page, str(ex), "error"); return
-        page.pop_dialog(); snack(page, "Pago eliminado", "ok"); on_refresh()
-    page.show_dialog(ft.AlertDialog(title=ft.Text("Eliminar pago"), content=ft.Text(f"¿Eliminar el pago de {float(p['monto']):,.2f} {p['moneda']} con {p['metodo']}?\n\nEl saldo pendiente de la orden se recalculará.", size=13, color=es.COLOR_TEXTO), actions=[ft.TextButton("Cancelar", on_click=lambda e: page.pop_dialog()), ft.FilledButton("Eliminar", on_click=hacer, style=ft.ButtonStyle(bgcolor=es.COLOR_PELIGRO, color="white"))], actions_alignment=ft.MainAxisAlignment.END))
+    o = ven.obtener_orden(p["orden_id"])
 
+    es_ultimo = False
+    if o is not None:
+        otros_pagos = [x for x in o["pagos"] if x["id"] != p["id"]]
+        abonos = o.get("abonos") or []
+        es_ultimo = not otros_pagos and not abonos
+
+    texto = (
+        f"¿Eliminar el pago de {float(p['monto']):,.2f} "
+        f"{p['moneda']} con {p['metodo']}?"
+    )
+    if es_ultimo:
+        texto += (
+            "\n\n⚠️ Es el ÚLTIMO pago de la orden. "
+            "Podrás borrarlo, pero deberás agregar uno nuevo "
+            "antes de cerrar el diálogo de pagos, o anular la "
+            "orden si ya no se va a cobrar."
+        )
+    else:
+        texto += "\n\nEl saldo pendiente de la orden se recalculará."
+
+    def hacer(e):
+        page.pop_dialog()
+        try:
+            ven.eliminar_pago(p["id"], app.usuario)
+        except Exception as ex:
+            snack(page, str(ex), "error")
+            return
+        snack(page, "Pago eliminado", "ok")
+        on_refresh()
+
+    page.show_dialog(ft.AlertDialog(
+        title=ft.Text("Eliminar pago"),
+        content=ft.Text(texto, size=13, color=es.COLOR_TEXTO),
+        actions=[
+            ft.TextButton(
+                "Cancelar",
+                on_click=lambda e: page.pop_dialog()),
+            ft.FilledButton(
+                "Eliminar", on_click=hacer,
+                style=ft.ButtonStyle(
+                    bgcolor=es.COLOR_PELIGRO, color="white")),
+        ],
+        actions_alignment=ft.MainAxisAlignment.END,
+    ))
 
 def _modal_cliente_orden(app, orden_id, on_select):
     page = app.page

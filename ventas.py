@@ -282,51 +282,116 @@ def recalcular_orden_completa(conn, orden_id):
     _recalcular_estado_orden(conn, orden_id)
 
 def editar_items_orden(orden_id, items_nuevos, usuario, fecha=None):
+    """
+    Edita los ítems de una orden y regenera sus movimientos SALIDA.
+    - Auto-ajusta el pago único no-crédito si su monto cubría EXACTO
+      el total anterior (para no obligar al cajero a borrar el pago
+      y re-crearlo cada vez que edita la orden).
+    - Sincroniza el pago Fiado al nuevo saldo.
+    """
     username = _username(usuario)
-    if not items_nuevos: raise ValueError("La orden debe tener al menos un ítem")
+    if not items_nuevos:
+        raise ValueError("La orden debe tener al menos un ítem")
     with get_conn() as conn:
-        o = conn.execute("SELECT * FROM ordenes_venta WHERE id=?", (orden_id,)).fetchone()
-        if o is None or o["estado"] in ("anulada", "devuelta"): raise ValueError("No se puede editar esta orden")
+        o = conn.execute(
+            "SELECT * FROM ordenes_venta WHERE id=?", (orden_id,)
+        ).fetchone()
+        if o is None or o["estado"] in ("anulada", "devuelta"):
+            raise ValueError("No se puede editar esta orden")
         fecha = fecha or o["fecha"]
-        
-        n_pagos = conn.execute("SELECT COUNT(*) AS n FROM pagos p JOIN metodos_pago m ON m.clave=p.metodo WHERE p.orden_id=? AND m.es_credito=0", (orden_id,)).fetchone()["n"]
-        n_abonos = conn.execute("SELECT COUNT(*) AS n FROM abonos WHERE orden_id=?", (orden_id,)).fetchone()["n"]
-        if n_pagos == 0 and n_abonos == 0: raise ValueError("La orden no puede quedar sin pagos.")
 
-        old_items = conn.execute("SELECT * FROM orden_items WHERE orden_id=?", (orden_id,)).fetchall()
+        old_items = conn.execute(
+            "SELECT * FROM orden_items WHERE orden_id=?", (orden_id,)
+        ).fetchall()
         for it in old_items:
-            if it["producto_id"]: conn.execute("UPDATE productos SET stock=stock+?, fecha_ultima_mod=? WHERE id=?", (it["cantidad"], fecha, it["producto_id"]))
+            if it["producto_id"]:
+                conn.execute(
+                    "UPDATE productos SET stock=stock+?, "
+                    "fecha_ultima_mod=? WHERE id=?",
+                    (it["cantidad"], fecha, it["producto_id"]),
+                )
 
-        conn.execute("DELETE FROM movimientos WHERE tipo='SALIDA' AND LOWER(TRIM(COALESCE(motivo,''))) IN ('venta','combos') AND detalle LIKE ?", (f"%{o['numero_ticket']}%",))
-        conn.execute("DELETE FROM orden_items WHERE orden_id=?", (orden_id,))
+        conn.execute(
+            "DELETE FROM movimientos WHERE tipo='SALIDA' "
+            "AND LOWER(TRIM(COALESCE(motivo,''))) IN ('venta','combos') "
+            "AND detalle LIKE ?",
+            (f"%{o['numero_ticket']}%",),
+        )
+        conn.execute(
+            "DELETE FROM orden_items WHERE orden_id=?", (orden_id,)
+        )
 
         subtotal = 0.0
         for it in items_nuevos:
-            p = conn.execute("SELECT * FROM productos WHERE id=?", (it["producto_id"],)).fetchone()
-            if p is None or not p["activo"]: raise ValueError(f"Producto inválido: {it['nombre']}")
-            if float(it["cantidad"]) > float(p["stock"] or 0) + 0.001: raise ValueError(f"Stock insuficiente de «{it['nombre']}»")
-            subtotal += (float(it["precio_unitario"]) - float(it["rebaja"])) * float(it["cantidad"])
+            p = conn.execute(
+                "SELECT * FROM productos WHERE id=?",
+                (it["producto_id"],),
+            ).fetchone()
+            if p is None or not p["activo"]:
+                raise ValueError(f"Producto inválido: {it['nombre']}")
+            if float(it["cantidad"]) > float(p["stock"] or 0) + 0.001:
+                raise ValueError(
+                    f"Stock insuficiente de «{it['nombre']}»"
+                )
+            subtotal += (float(it["precio_unitario"])
+                         - float(it["rebaja"])) * float(it["cantidad"])
 
-        desc_pct = (float(o["descuento_global"] or 0) / float(o["subtotal"])) * 100.0 if float(o["subtotal"] or 0) > 0 else 0.0
+        desc_pct = (
+            (float(o["descuento_global"] or 0)
+             / float(o["subtotal"])) * 100.0
+            if float(o["subtotal"] or 0) > 0 else 0.0
+        )
         descuento_total = subtotal * (desc_pct / 100.0)
         total_nuevo = round(subtotal - descuento_total, 2)
 
-        pagos_nc = conn.execute("SELECT COALESCE(SUM(p.monto_cup),0) AS t FROM pagos p JOIN metodos_pago m ON m.clave=p.metodo WHERE p.orden_id=? AND m.es_credito=0 AND p.metodo <> 'Efectivo'", (orden_id,)).fetchone()["t"]
-        abonos = conn.execute("SELECT COALESCE(SUM(monto_cup),0) AS t FROM abonos WHERE orden_id=?", (orden_id,)).fetchone()["t"]
-        efectivo = conn.execute("SELECT COALESCE(SUM(p.monto_cup),0) AS t FROM pagos p JOIN metodos_pago m ON m.clave=p.metodo WHERE p.orden_id=? AND m.es_credito=0 AND p.metodo = 'Efectivo'", (orden_id,)).fetchone()["t"]
-        
+        pagos_nc = conn.execute(
+            "SELECT COALESCE(SUM(p.monto_cup),0) AS t FROM pagos p "
+            "JOIN metodos_pago m ON m.clave=p.metodo "
+            "WHERE p.orden_id=? AND m.es_credito=0 "
+            "AND p.metodo <> 'Efectivo'",
+            (orden_id,),
+        ).fetchone()["t"]
+        abonos = conn.execute(
+            "SELECT COALESCE(SUM(monto_cup),0) AS t FROM abonos "
+            "WHERE orden_id=?",
+            (orden_id,),
+        ).fetchone()["t"]
+        efectivo = conn.execute(
+            "SELECT COALESCE(SUM(p.monto_cup),0) AS t FROM pagos p "
+            "JOIN metodos_pago m ON m.clave=p.metodo "
+            "WHERE p.orden_id=? AND m.es_credito=0 "
+            "AND p.metodo = 'Efectivo'",
+            (orden_id,),
+        ).fetchone()["t"]
+
         cobrado_total = float(pagos_nc) + float(abonos) + float(efectivo)
-        
-        # Rescatar vuelto y propina acumulados en los pagos y abonos
-        vuelto_actual = conn.execute("SELECT COALESCE(SUM(vuelto_cup),0) as t FROM pagos WHERE orden_id=?", (orden_id,)).fetchone()["t"]
-        vuelto_actual += conn.execute("SELECT COALESCE(SUM(vuelto_cup),0) as t FROM abonos WHERE orden_id=?", (orden_id,)).fetchone()["t"]
-        propina_actual = conn.execute("SELECT COALESCE(SUM(propina_cup),0) as t FROM pagos WHERE orden_id=?", (orden_id,)).fetchone()["t"]
-        propina_actual += conn.execute("SELECT COALESCE(SUM(propina_cup),0) as t FROM abonos WHERE orden_id=?", (orden_id,)).fetchone()["t"]
+
+        vuelto_actual = conn.execute(
+            "SELECT COALESCE(SUM(vuelto_cup),0) as t FROM pagos "
+            "WHERE orden_id=?",
+            (orden_id,),
+        ).fetchone()["t"]
+        vuelto_actual += conn.execute(
+            "SELECT COALESCE(SUM(vuelto_cup),0) as t FROM abonos "
+            "WHERE orden_id=?",
+            (orden_id,),
+        ).fetchone()["t"]
+        propina_actual = conn.execute(
+            "SELECT COALESCE(SUM(propina_cup),0) as t FROM pagos "
+            "WHERE orden_id=?",
+            (orden_id,),
+        ).fetchone()["t"]
+        propina_actual += conn.execute(
+            "SELECT COALESCE(SUM(propina_cup),0) as t FROM abonos "
+            "WHERE orden_id=?",
+            (orden_id,),
+        ).fetchone()["t"]
 
         if cobrado_total >= total_nuevo - 0.01:
             nuevo_saldo = 0.0
             nuevo_estado = "pagada"
-            nuevo_vuelto = float(vuelto_actual) + max(0.0, cobrado_total - total_nuevo)
+            nuevo_vuelto = float(vuelto_actual) + max(
+                0.0, cobrado_total - total_nuevo)
             nuevo_propina = float(propina_actual)
         elif cobrado_total > 0.01:
             nuevo_saldo = round(total_nuevo - cobrado_total, 2)
@@ -339,50 +404,175 @@ def editar_items_orden(orden_id, items_nuevos, usuario, fecha=None):
             nuevo_vuelto = float(vuelto_actual)
             nuevo_propina = float(propina_actual)
 
-        total_subs_base = sum((float(it["precio_unitario"]) - float(it["rebaja"])) * float(it["cantidad"]) for it in items_nuevos)
+        total_subs_base = sum(
+            (float(it["precio_unitario"]) - float(it["rebaja"]))
+            * float(it["cantidad"])
+            for it in items_nuevos
+        )
         for it in items_nuevos:
-            sub_base = (float(it["precio_unitario"]) - float(it["rebaja"])) * float(it["cantidad"])
-            desc_extra_total = descuento_total * (sub_base / total_subs_base) if total_subs_base > 0 else 0.0
-            rebaja_final = float(it["rebaja"]) + (desc_extra_total / float(it["cantidad"]) if it["cantidad"] else 0.0)
-            importe = round((float(it["precio_unitario"]) - rebaja_final) * float(it["cantidad"]), 2)
+            sub_base = (
+                (float(it["precio_unitario"]) - float(it["rebaja"]))
+                * float(it["cantidad"])
+            )
+            desc_extra_total = (
+                descuento_total * (sub_base / total_subs_base)
+                if total_subs_base > 0 else 0.0
+            )
+            rebaja_final = float(it["rebaja"]) + (
+                desc_extra_total / float(it["cantidad"])
+                if it["cantidad"] else 0.0
+            )
+            importe = round(
+                (float(it["precio_unitario"]) - rebaja_final)
+                * float(it["cantidad"]),
+                2,
+            )
 
-            conn.execute("INSERT INTO orden_items(orden_id,producto_id,nombre,codigo,cantidad,precio_unitario,rebaja,importe) VALUES(?,?,?,?,?,?,?,?)",
-                         (orden_id, it["producto_id"], it["nombre"], it.get("codigo"), it["cantidad"], it["precio_unitario"], rebaja_final, importe))
+            conn.execute(
+                "INSERT INTO orden_items(orden_id,producto_id,nombre,"
+                "codigo,cantidad,precio_unitario,rebaja,importe) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (orden_id, it["producto_id"], it["nombre"],
+                 it.get("codigo"), it["cantidad"],
+                 it["precio_unitario"], rebaja_final, importe),
+            )
 
-            p = conn.execute("SELECT * FROM productos WHERE id=?", (it["producto_id"],)).fetchone()
-            conn.execute("UPDATE productos SET stock=stock-?, fecha_ultima_mod=? WHERE id=?", (it["cantidad"], fecha, it["producto_id"]))
-            conn.execute("INSERT INTO movimientos(local_id,producto_id,tipo,cantidad,motivo,detalle,rebaja,precio_unitario_momento,precio_costo_momento,fecha,usuario) VALUES(?,?,'SALIDA',?,?,?,?,?,?,?,?)",
-                         (o["local_id"], it["producto_id"], it["cantidad"], _MOTIVO_VENTA_POS, f"Ticket {o['numero_ticket']}", rebaja_final, float(it["precio_unitario"]), float(p["precio_costo"] or 0), fecha, username))
+            p = conn.execute(
+                "SELECT * FROM productos WHERE id=?",
+                (it["producto_id"],),
+            ).fetchone()
+            conn.execute(
+                "UPDATE productos SET stock=stock-?, "
+                "fecha_ultima_mod=? WHERE id=?",
+                (it["cantidad"], fecha, it["producto_id"]),
+            )
+            conn.execute(
+                "INSERT INTO movimientos(local_id,producto_id,tipo,"
+                "cantidad,motivo,detalle,rebaja,"
+                "precio_unitario_momento,precio_costo_momento,"
+                "fecha,usuario) "
+                "VALUES(?,?,'SALIDA',?,?,?,?,?,?,?,?)",
+                (o["local_id"], it["producto_id"], it["cantidad"],
+                 _MOTIVO_VENTA_POS, f"Ticket {o['numero_ticket']}",
+                 rebaja_final, float(it["precio_unitario"]),
+                 float(p["precio_costo"] or 0), fecha, username),
+            )
 
-        conn.execute("UPDATE ordenes_venta SET subtotal=?, descuento_global=?, total=?, saldo_pendiente=?, estado=?, vuelto_cup=?, propina_cup=? WHERE id=?",
-                     (round(subtotal, 2), round(descuento_total, 2), total_nuevo, nuevo_saldo, nuevo_estado, nuevo_vuelto, nuevo_propina, orden_id))
+        conn.execute(
+            "UPDATE ordenes_venta SET subtotal=?, descuento_global=?, "
+            "total=?, saldo_pendiente=?, estado=?, vuelto_cup=?, "
+            "propina_cup=? WHERE id=?",
+            (round(subtotal, 2), round(descuento_total, 2),
+             total_nuevo, nuevo_saldo, nuevo_estado, nuevo_vuelto,
+             nuevo_propina, orden_id),
+        )
+
+        # ── Auto-ajuste del pago único no-crédito ──
+        # Si la orden tenía UN solo pago no-crédito, sin abonos y ese
+        # pago cubría EXACTO el total anterior (sin vuelto), ajustarlo
+        # al nuevo total. Así el cajero no tiene que borrar el pago y
+        # crearlo de nuevo al editar la orden.
+        pagos_unicos = conn.execute(
+            "SELECT p.* FROM pagos p "
+            "JOIN metodos_pago m ON m.clave=p.metodo "
+            "WHERE p.orden_id=? AND m.es_credito=0",
+            (orden_id,),
+        ).fetchall()
+        abonos_count = conn.execute(
+            "SELECT COUNT(*) AS n FROM abonos WHERE orden_id=?",
+            (orden_id,),
+        ).fetchone()["n"]
+        if len(pagos_unicos) == 1 and abonos_count == 0:
+            pago = pagos_unicos[0]
+            total_anterior = float(o["total"] or 0)
+            monto_cup_actual = float(pago["monto_cup"] or 0)
+            vuelto_pago = float(pago["vuelto_cup"] or 0)
+            if (abs(monto_cup_actual - total_anterior) < 0.01
+                    and vuelto_pago < 0.01):
+                moneda_pago = (pago["moneda"] or "CUP").upper()
+                tasa_pago = float(pago["tasa"] or 1.0)
+                if tasa_pago <= 0:
+                    tasa_pago = 1.0
+                monto_moneda = round(total_nuevo / tasa_pago, 2)
+                if moneda_pago != "CUP":
+                    monto_moneda = redondear_divisa(
+                        monto_moneda, moneda_pago
+                    )
+                nuevo_monto_cup = monto_moneda * tasa_pago
+                if nuevo_monto_cup > total_nuevo:
+                    nuevo_vuelto_pago = round(
+                        nuevo_monto_cup - total_nuevo, 2
+                    )
+                    monto_aplicado = total_nuevo
+                else:
+                    nuevo_vuelto_pago = 0.0
+                    monto_aplicado = nuevo_monto_cup
+                conn.execute(
+                    "UPDATE pagos SET monto=?, monto_cup=?, "
+                    "vuelto_cup=? WHERE id=?",
+                    (monto_moneda, monto_aplicado,
+                     nuevo_vuelto_pago, pago["id"]),
+                )
+                conn.execute(
+                    "UPDATE ordenes_venta SET vuelto_cup=?, "
+                    "saldo_pendiente=0, estado='pagada' WHERE id=?",
+                    (nuevo_vuelto_pago, orden_id),
+                )
+
         _sincronizar_pago_fiado(conn, orden_id, nuevo_saldo)
     inv.invalidar_cache()
-    return {"total": total_nuevo, "estado": nuevo_estado, "saldo_pendiente": nuevo_saldo}
+    return {"total": total_nuevo, "estado": nuevo_estado,
+            "saldo_pendiente": nuevo_saldo}
 
-# ... (resto del archivo igual) ...
-
-def editar_pago(pago_id, nuevo_metodo, nueva_moneda=None, usuario=None, destino_sobrante="vuelto"):
-    from configuracion_negocio import obtener_metodo_pago, moneda_efectiva_metodo
+def editar_pago(pago_id, nuevo_metodo, nueva_moneda=None,
+                usuario=None, destino_sobrante="vuelto",
+                nuevo_monto=None):
+    from configuracion_negocio import (
+        obtener_metodo_pago, moneda_efectiva_metodo,
+    )
     m = obtener_metodo_pago(nuevo_metodo)
-    if m is None or not m["activo"]: raise ValueError(f"Método inválido: «{nuevo_metodo}»")
+    if m is None or not m["activo"]:
+        raise ValueError(f"Método inválido: «{nuevo_metodo}»")
     with get_conn() as conn:
-        p = conn.execute("SELECT * FROM pagos WHERE id=?", (pago_id,)).fetchone()
-        if p is None: raise ValueError("Pago no encontrado")
-        o = conn.execute("SELECT * FROM ordenes_venta WHERE id=?", (p["orden_id"],)).fetchone()
-        if o is None: raise ValueError("Orden no encontrada")
-        if o["estado"] == "anulada": raise ValueError("No se puede editar una orden anulada")
+        p = conn.execute(
+            "SELECT * FROM pagos WHERE id=?", (pago_id,)
+        ).fetchone()
+        if p is None:
+            raise ValueError("Pago no encontrado")
+        o = conn.execute(
+            "SELECT * FROM ordenes_venta WHERE id=?",
+            (p["orden_id"],),
+        ).fetchone()
+        if o is None:
+            raise ValueError("Orden no encontrada")
+        if o["estado"] == "anulada":
+            raise ValueError("No se puede editar una orden anulada")
 
         moneda_fija = moneda_efectiva_metodo(m)
         moneda = moneda_fija or (nueva_moneda or "CUP").upper()
         t_nueva = inv.get_tasa(moneda)
-        if t_nueva <= 0: raise ValueError("La tasa de cambio es inválida")
+        if t_nueva <= 0:
+            raise ValueError("La tasa de cambio es inválida")
 
-        # Mantenemos el valor bruto original que el cliente pagó en su momento
-        monto_bruto_original = float(p["monto"] or 0) * float(p["tasa"] or 1.0)
-        
-        # Calculamos el monto en la nueva moneda y redondeamos
-        monto_nuevo = monto_bruto_original / t_nueva
+        if nuevo_monto is not None:
+            # Monto explícito del usuario (en la moneda elegida).
+            monto_nuevo = float(nuevo_monto)
+            if monto_nuevo <= 0:
+                raise ValueError("El monto debe ser mayor que 0")
+        else:
+            # ── FIX inflación acumulativa ──
+            # El invariante es el MONTO APLICADO en CUP (monto_cup),
+            # NO monto × tasa. El bruto con redondeo no sirve porque
+            # crece en cada ciclo USD↔EUR↔USD↔EUR.
+            monto_cup_ref = float(p["monto_cup"] or 0)
+            if monto_cup_ref <= 0:
+                # Fallback defensivo (pago corrupto con monto_cup=0).
+                monto_cup_ref = (
+                    float(p["monto"] or 0) * float(p["tasa"] or 1.0)
+                )
+            monto_nuevo = monto_cup_ref / t_nueva
+
+        # Redondeo según la moneda final
         if moneda != "CUP":
             monto_nuevo = redondear_divisa(monto_nuevo, moneda)
         else:
@@ -390,38 +580,50 @@ def editar_pago(pago_id, nuevo_metodo, nueva_moneda=None, usuario=None, destino_
 
         nuevo_monto_cup_bruto = monto_nuevo * t_nueva
 
-        # Calculamos el saldo de la orden SIN este pago
-        pagado_sin_este = _calcular_pagado(conn, p["orden_id"]) - float(p["monto_cup"] or 0)
+        # Saldo de la orden SIN este pago.
+        pagado_sin_este = (
+            _calcular_pagado(conn, p["orden_id"])
+            - float(p["monto_cup"] or 0)
+        )
         total = float(o["total"] or 0)
         saldo_sin_este = max(0.0, total - pagado_sin_este)
 
-        # El monto aplicado es el que cubre el saldo (el resto es vuelto/propina)
         monto_aplicado_cup = min(nuevo_monto_cup_bruto, saldo_sin_este)
         sobrante = max(0.0, nuevo_monto_cup_bruto - saldo_sin_este)
 
         p_vuelto = 0.0
         p_propina = 0.0
         if sobrante > 0.01:
-            if destino_sobrante == "propina": p_propina = sobrante
-            else: p_vuelto = sobrante
+            if destino_sobrante == "propina":
+                p_propina = sobrante
+            else:
+                p_vuelto = sobrante
 
-        # Diferencia respecto al vuelto/propina que ya existía en este pago
         old_vuelto = float(p["vuelto_cup"] or 0)
         old_propina = float(p["propina_cup"] or 0)
 
-        conn.execute("UPDATE pagos SET metodo=?, moneda=?, monto=?, tasa=?, monto_cup=?, vuelto_cup=?, propina_cup=? WHERE id=?", 
-                     (nuevo_metodo, moneda, monto_nuevo, t_nueva, monto_aplicado_cup, p_vuelto, p_propina, pago_id))
-        
+        conn.execute(
+            "UPDATE pagos SET metodo=?, moneda=?, monto=?, tasa=?, "
+            "monto_cup=?, vuelto_cup=?, propina_cup=? WHERE id=?",
+            (nuevo_metodo, moneda, monto_nuevo, t_nueva,
+             monto_aplicado_cup, p_vuelto, p_propina, pago_id),
+        )
+
         diff_vuelto = p_vuelto - old_vuelto
         diff_propina = p_propina - old_propina
-        
-        # Actualizamos el vuelto/propina acumulado en la orden
         if abs(diff_vuelto) > 0.001 or abs(diff_propina) > 0.001:
-            conn.execute("UPDATE ordenes_venta SET vuelto_cup = vuelto_cup + ?, propina_cup = propina_cup + ? WHERE id=?", (diff_vuelto, diff_propina, p["orden_id"]))
-        
-        _recalcular_estado_orden(conn, p["orden_id"])
-    return {"metodo": nuevo_metodo, "moneda": moneda, "monto": monto_nuevo, "tasa": t_nueva, "monto_cup": monto_aplicado_cup}
+            conn.execute(
+                "UPDATE ordenes_venta SET vuelto_cup = vuelto_cup + ?, "
+                "propina_cup = propina_cup + ? WHERE id=?",
+                (diff_vuelto, diff_propina, p["orden_id"]),
+            )
 
+        _recalcular_estado_orden(conn, p["orden_id"])
+    return {
+        "metodo": nuevo_metodo, "moneda": moneda,
+        "monto": monto_nuevo, "tasa": t_nueva,
+        "monto_cup": monto_aplicado_cup,
+    }
 
 def agregar_pago_a_orden(orden_id, metodo, moneda, monto, usuario, destino_sobrante="vuelto"):
     from configuracion_negocio import obtener_metodo_pago, moneda_efectiva_metodo
@@ -464,13 +666,42 @@ def agregar_pago_a_orden(orden_id, metodo, moneda, monto, usuario, destino_sobra
 
 def eliminar_pago(pago_id, usuario):
     with get_conn() as conn:
-        p = conn.execute("SELECT * FROM pagos WHERE id=?", (pago_id,)).fetchone()
-        if p is None: raise ValueError("Pago no encontrado")
-        o = conn.execute("SELECT * FROM ordenes_venta WHERE id=?", (p["orden_id"],)).fetchone()
-        if o["estado"] == "anulada": raise ValueError("No se puede editar una orden anulada")
+        p = conn.execute(
+            "SELECT * FROM pagos WHERE id=?", (pago_id,)
+        ).fetchone()
+        if p is None:
+            raise ValueError("Pago no encontrado")
+        o = conn.execute(
+            "SELECT * FROM ordenes_venta WHERE id=?",
+            (p["orden_id"],),
+        ).fetchone()
+        if o["estado"] == "anulada":
+            raise ValueError("No se puede editar una orden anulada")
         conn.execute("DELETE FROM pagos WHERE id=?", (pago_id,))
         _recalcular_estado_orden(conn, p["orden_id"])
     inv.invalidar_cache()
+
+def validar_orden_para_guardar(orden_id):
+    """
+    Verifica que la orden tenga al menos un pago (crédito o no) o un
+    abono. Llamar al final del flujo de edición, después de aplicar
+    TODOS los cambios (ítems y pagos). Sirve para el UI, NO para
+    `editar_items_orden` (que edita ítems, no cobros).
+    """
+    with get_conn() as conn:
+        n_pagos = conn.execute(
+            "SELECT COUNT(*) AS n FROM pagos WHERE orden_id=?",
+            (orden_id,),
+        ).fetchone()["n"]
+        n_abonos = conn.execute(
+            "SELECT COUNT(*) AS n FROM abonos WHERE orden_id=?",
+            (orden_id,),
+        ).fetchone()["n"]
+    if n_pagos == 0 and n_abonos == 0:
+        raise ValueError(
+            "La orden no puede quedar sin pagos. "
+            "Agrega uno desde el botón «Pagos» o anula la orden."
+        )
 
 def cambiar_metodo_pago(pago_id, nuevo_metodo, usuario):
     return editar_pago(pago_id=pago_id, nuevo_metodo=nuevo_metodo, usuario=usuario)

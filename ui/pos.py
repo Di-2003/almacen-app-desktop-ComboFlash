@@ -11,6 +11,11 @@ FIX (acumulación por redondeo):
   desde `cup_objetivo` (fuente de verdad en CUP), no desde el monto
   actual ya redondeado. Esto evita que el monto crezca sin fin al
   alternar entre CUP/USD/EUR repetidamente.
+
+FIX (propina vs vuelto):
+  El diálogo de cobro y la fila de cada pago muestran el destino
+  real del sobrante (propina o vuelto), respetando lo que eligió
+  el usuario en `dlg_destino_sobrante`.
 """
 import flet as ft
 import math
@@ -24,7 +29,7 @@ import configuracion_negocio as cfg
 from ui import estilos as es
 from ui.componentes import (
     campo_busqueda, empty_state, snack, bottom_sheet, mounted,
-    toast, copiar_portapapeles,
+    toast, copiar_portapapeles, dlg_destino_sobrante,
 )
 from ui._scroll import columna_scroll
 
@@ -914,6 +919,14 @@ def _abrir_cobro(app, bs_carrito, rebuild_carrito,
 
         sobrante_cup = -falta if falta < -0.01 else 0.0
 
+        # ── Detectar destino del sobrante ──
+        # Si el usuario marcó el sobrante como propina, el resumen
+        # lo muestra como propina; si no, como vuelto al cliente.
+        tiene_propina = any(
+            p.get("destino_sobrante") == "propina"
+            for p in pagos_state["pagos"]
+        )
+
         filas = [
             _fila_total("Total venta", f"${tot['total']:,.2f}"),
             _fila_total("Pagado",
@@ -925,10 +938,16 @@ def _abrir_cobro(app, bs_carrito, rebuild_carrito,
                                       color=es.COLOR_PELIGRO,
                                       grande=True))
         elif sobrante_cup > 0.01:
-            filas.append(_fila_total(
-                "Vuelto al cliente (CUP)",
-                f"${sobrante_cup:,.2f}",
-                color=es.COLOR_AMBAR, grande=True))
+            if tiene_propina:
+                filas.append(_fila_total(
+                    "Sobrante (propina)",
+                    f"${sobrante_cup:,.2f}",
+                    color=es.COLOR_EXITO, grande=True))
+            else:
+                filas.append(_fila_total(
+                    "Sobrante (vuelto al cliente)",
+                    f"${sobrante_cup:,.2f}",
+                    color=es.COLOR_AMBAR, grande=True))
         else:
             filas.append(_fila_total("Pagado exacto",
                                       "$0.00",
@@ -1036,6 +1055,18 @@ def _fila_pago(app, idx, p, pagos_state, rebuild, tot):
             app, metodo, falta_sin_este, pagos_state, rebuild,
             indice_existente=idx)
 
+    # ── Etiqueta del destino del sobrante ──
+    destino = p.get("destino_sobrante")
+    if destino == "propina":
+        etiqueta_destino = "  ·  propina"
+        color_destino = es.COLOR_EXITO
+    elif destino == "vuelto":
+        etiqueta_destino = "  ·  vuelto"
+        color_destino = es.COLOR_AMBAR
+    else:
+        etiqueta_destino = ""
+        color_destino = es.COLOR_TEXTO_SUAVE
+
     return ft.Container(
         content=ft.Row([
             ft.Column([
@@ -1045,8 +1076,9 @@ def _fila_pago(app, idx, p, pagos_state, rebuild, tot):
                 ft.Text(
                     f"{p['monto']:.2f} {p['moneda']}"
                     + (f"  = ${p['monto'] * p['tasa']:,.2f} CUP"
-                       if p["moneda"] != "CUP" else ""),
-                    size=11, color=es.COLOR_TEXTO_SUAVE),
+                       if p["moneda"] != "CUP" else "")
+                    + etiqueta_destino,
+                    size=11, color=color_destino),
             ], spacing=2, expand=True),
             ft.IconButton(ft.Icons.EDIT, icon_size=18,
                           icon_color=es.COLOR_ACENTO,
@@ -1115,7 +1147,6 @@ def _elegir_metodo(app, metodos, pagos_state, rebuild):
 def _agregar_pago(app, metodo, falta_cup, pagos_state, rebuild, indice_existente=None):
     from configuracion_negocio import moneda_efectiva_metodo, es_credito_metodo
     from ui.componentes import dlg_destino_sobrante
-    import ventas as ven # Asegúrate de importar ven
 
     page = app.page
     if es_credito_metodo(metodo):
@@ -1124,7 +1155,6 @@ def _agregar_pago(app, metodo, falta_cup, pagos_state, rebuild, indice_existente
 
     moneda_fija = moneda_efectiva_metodo(metodo)
     moneda_inicial = moneda_fija or "CUP"
-    es_efe = _es_efectivo(metodo)
 
     estado = {"moneda": moneda_inicial, "cup_objetivo": float(falta_cup)}
 
@@ -1215,6 +1245,8 @@ def _agregar_pago(app, metodo, falta_cup, pagos_state, rebuild, indice_existente
     _rebuild_chips()
     _rec_info()
 
+    dlg_ref = {"dlg": None}
+
     def guardar(e):
         error_lbl.value = ""
         m = estado["moneda"]
@@ -1223,24 +1255,35 @@ def _agregar_pago(app, metodo, falta_cup, pagos_state, rebuild, indice_existente
             error_lbl.value = "El monto debe ser mayor que 0"
             page.update()
             return
-            
         if (m or "").upper() != "CUP":
             v = ven.redondear_divisa(v, m)
-            tf_monto.value = f"{v:g}"
-            tf_monto.update()
-            
+        
         monto_cup_bruto = v * inv.get_tasa(m)
         sobrante = max(0.0, monto_cup_bruto - falta_cup)
 
         def _finalizar(destino=None):
-            nuevo = {"metodo": metodo["clave"], "moneda": m, "monto": v, "tasa": inv.get_tasa(m), "destino_sobrante": destino}
-            if indice_existente is not None: pagos_state["pagos"][indice_existente] = nuevo
-            else: pagos_state["pagos"].append(nuevo)
-            page.pop_dialog()
+            nuevo = {
+                "metodo": metodo["clave"],
+                "moneda": m,
+                "monto": v,
+                "tasa": inv.get_tasa(m),
+                "destino_sobrante": destino
+            }
+            if indice_existente is not None:
+                pagos_state["pagos"][indice_existente] = nuevo
+            else:
+                pagos_state["pagos"].append(nuevo)
+                
+            if dlg_ref["dlg"]:
+                dlg_ref["dlg"].open = False
+                page.update()
+                
             rebuild()
 
         if sobrante > 0.01:
-            page.pop_dialog()
+            if dlg_ref["dlg"]:
+                dlg_ref["dlg"].open = False
+                page.update()
             dlg_destino_sobrante(page, sobrante, _finalizar)
         else:
             _finalizar()
@@ -1248,12 +1291,14 @@ def _agregar_pago(app, metodo, falta_cup, pagos_state, rebuild, indice_existente
     titulo = f"Editar pago: {metodo['etiqueta']}" if indice_existente is not None else f"Pago: {metodo['etiqueta']}"
     texto_boton = "Guardar" if indice_existente is not None else "Agregar"
 
-    page.show_dialog(ft.AlertDialog(
+    dlg = ft.AlertDialog(
         title=ft.Text(titulo),
         content=ft.Column([ft.Text("Moneda", size=11, color=es.COLOR_TEXTO_SUAVE), contenedor_chips, ft.Container(height=4), tf_monto, lbl_info, lbl_vuelto, error_lbl], tight=True, width=360, spacing=10),
         actions=[ft.TextButton("Cancelar", on_click=lambda e: page.pop_dialog()), ft.FilledButton(texto_boton, on_click=guardar, style=es.estilo_boton_marca())],
         actions_alignment=ft.MainAxisAlignment.END,
-    ))
+    )
+    dlg_ref["dlg"] = dlg
+    page.show_dialog(dlg)
 
 
 def _dlg_fiado(app, metodo, falta_cup, pagos_state, rebuild,
@@ -1549,4 +1594,5 @@ def _mostrar_ticket(app, orden_id):
         ],
         actions_alignment=ft.MainAxisAlignment.END,
     ))
-    
+
+
