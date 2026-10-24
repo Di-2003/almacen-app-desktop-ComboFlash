@@ -18,6 +18,12 @@ FIX 2 (promedio ponderado condicional):
   Si el producto NO tenía precio (>0) en un campo, el nuevo precio se
   fija directamente. Solo se promedia cuando YA existía un precio > 0.
   Aplica por separado a costo y a venta.
+
+FIX 3 (stock negativo transitorio al editar):
+  Al editar un movimiento, el sistema primero revierte el movimiento
+  original (lo que puede dejar el stock en negativo temporalmente) y
+  luego aplica el nuevo. El error de "stock negativo" ahora se ignora
+  durante esa reversión para permitir que la edición termine bien.
 """
 import re
 import uuid
@@ -1360,7 +1366,7 @@ def totales_por_concepto(local_id) -> dict:
 
 # ================= ELIMINAR MOVIMIENTO =================
 
-def _revertir_efecto_stock(conn, producto_id, tipo, cantidad):
+def _revertir_efecto_stock(conn, producto_id, tipo, cantidad, permitir_negativo=False):
     if tipo in ("AJUSTE", "UMBRAL", "RESTAURACION"):
         return
 
@@ -1378,16 +1384,20 @@ def _revertir_efecto_stock(conn, producto_id, tipo, cantidad):
             "Reactiva el producto manualmente si es necesario.")
     else:
         raise ValueError(f"Tipo no soportado para eliminación: {tipo}")
+    
     prod = conn.execute(
         "SELECT stock FROM productos WHERE id=?", (producto_id,)
     ).fetchone()
     if prod is None:
         raise ValueError("Producto no encontrado para revertir stock")
+    
     nuevo = float(prod["stock"]) + cambio
-    if nuevo < 0:
+    
+    if nuevo < 0 and not permitir_negativo:
         raise ValueError(
             f"El stock quedaría negativo ({nuevo:.2f}) al revertir "
             f"el movimiento. Revisa las operaciones previas.")
+            
     conn.execute("UPDATE productos SET stock=? WHERE id=?",
                  (nuevo, producto_id))
 
@@ -1489,6 +1499,7 @@ def _sincronizar_orden_desde_movimiento(conn, mov_viejo, nuevo_prod,
 
 
 @_write
+@_write
 def editar_movimiento(mov_id, producto_id, tipo, cantidad, motivo,
                       fecha, usuario):
     """
@@ -1499,12 +1510,7 @@ def editar_movimiento(mov_id, producto_id, tipo, cantidad, motivo,
     - Actualiza el registro en la BD.
     - FIX 1: si el movimiento estaba vinculado a una orden POS,
       sincroniza el `orden_item` y recalcula los totales de la orden.
-
-    Solo permite editar ENTRADA y SALIDA.
-    Si el movimiento viene de un POS:
-      - El tipo debe seguir siendo SALIDA.
-      - El motivo debe seguir siendo 'Venta' o 'Combos'.
-      - No se puede cambiar el producto (para no descuadrar la orden).
+    - FIX 3: valida que el stock final no quede negativo tras la edición.
     """
     username = _autorizar(usuario, _ROLES_OPERATIVOS)
 
@@ -1570,10 +1576,13 @@ def editar_movimiento(mov_id, producto_id, tipo, cantidad, motivo,
         if tipo == "SALIDA" and cantidad > stock_efectivo:
             raise StockInsuficiente(stock_efectivo, cantidad)
 
+        # 1. Quitamos el efecto del movimiento viejo (permitiendo que baje de 0 temporalmente)
         _revertir_efecto_stock(
             conn, mov["producto_id"], mov["tipo"],
-            float(mov["cantidad"] or 0))
+            float(mov["cantidad"] or 0),
+            permitir_negativo=True)
 
+        # 2. Aplicamos el efecto del movimiento nuevo
         if tipo == "ENTRADA":
             conn.execute(
                 "UPDATE productos SET stock=stock+?, fecha_ultima_mod=? "
@@ -1585,13 +1594,26 @@ def editar_movimiento(mov_id, producto_id, tipo, cantidad, motivo,
                 "WHERE id=?",
                 (cantidad, fecha, nuevo_prod["id"]))
 
+        # ── FIX: Validar que el resultado final no sea negativo ──
+        prod_final = conn.execute(
+            "SELECT stock FROM productos WHERE id=?", (nuevo_prod["id"],)
+        ).fetchone()
+        if prod_final and float(prod_final["stock"]) < -0.001:
+            raise ValueError(
+                f"El stock final quedaría negativo ({fmt_cantidad(prod_final['stock'])}). "
+                f"Esto ocurre porque ya se habían hecho ventas o salidas "
+                f"de este producto que dependían de esa entrada original. "
+                f"No puedes reducir la entrada por debajo de lo ya vendido."
+            )
+
+        # 3. Guardamos el movimiento en el historial
         conn.execute(
             "UPDATE movimientos SET local_id=?, producto_id=?, tipo=?, "
             "cantidad=?, motivo=?, fecha=?, usuario=? WHERE id=?",
             (nuevo_prod["local_id"], nuevo_prod["id"], tipo, cantidad,
              motivo, fecha, username, mov_id))
 
-        # ─────────── FIX 1: sincronización con la orden POS ───────────
+        # 4. Sincronización con la orden POS (si aplica)
         if tipo == "SALIDA" and _es_movimiento_de_pos(mov):
             _sincronizar_orden_desde_movimiento(
                 conn, mov, nuevo_prod, cantidad
