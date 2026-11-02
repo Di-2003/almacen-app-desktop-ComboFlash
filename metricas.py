@@ -9,15 +9,6 @@ from db import get_conn, GENERAL_ID
 # ═══════════════════════════════════════════════════════════
 # CONSTANTES COMPARTIDAS
 # ═══════════════════════════════════════════════════════════
-#
-# En este proyecto existen DOS motivos válidos para una venta:
-#
-#   'Venta'  → ventas históricas (POS antiguo)
-#   'Combos' → motivo actual del POS y de la salida manual
-#              (configurable en configuracion.motivo_default_salida)
-#
-# Cualquier query que cuente ventas DEBE incluir ambos, o perderá
-# movimientos. Centralizamos aquí para no repetir la lista.
 
 VENTA_MOTIVOS = ("venta", "combos")
 
@@ -27,8 +18,7 @@ SQL_ES_VENTA = (
     "IN ('venta','combos')"
 )
 
-# Variante sin alias, para queries sobre `movimientos` que no usan
-# alias (por ejemplo, las funciones de compatibilidad del final).
+# Variante sin alias, para queries sobre `movimientos` que no usan alias.
 SQL_ES_VENTA_SIN_ALIAS = (
     "LOWER(TRIM(COALESCE(motivo,''))) "
     "IN ('venta','combos')"
@@ -42,6 +32,14 @@ NOT EXISTS (
     WHERE o.estado = 'anulada'
       AND m.detalle = 'Ticket ' || o.numero_ticket
 )
+"""
+
+# Exclusión de productos que no son inventario real (fondos de caja, etc.)
+SQL_NO_INVENTARIO = """
+    LOWER(COALESCE(p.nombre,'')) NOT LIKE 'fondo%' AND
+    LOWER(COALESCE(p.nombre,'')) NOT LIKE 'dinero%' AND
+    LOWER(COALESCE(p.nombre,'')) NOT LIKE 'efectivo%' AND
+    LOWER(COALESCE(p.nombre,'')) NOT LIKE 'caja%'
 """
 
 
@@ -82,49 +80,47 @@ def rango_calendario(periodo: str) -> tuple[str, str]:
 def resumen_periodo(local_id, periodo: str) -> dict:
     """
     Devuelve TODAS las métricas del período en un solo query.
-
-    Cuenta como venta los motivos en VENTA_MOTIVOS ('Venta' del POS
-    histórico y 'Combos' del POS actual) y excluye movimientos de
-    órdenes ANULADAS.
     """
     desde, hasta = rango_calendario(periodo)
 
     filtro = ""
     params = [desde, hasta]
     if local_id is not None and local_id != GENERAL_ID:
-        filtro = " AND local_id = ?"
+        filtro = " AND m.local_id = ?"
         params.append(local_id)
 
     sql = f"""
     SELECT
-        COALESCE(SUM(CASE WHEN tipo='ENTRADA'
-            THEN precio_costo_momento * cantidad ELSE 0 END), 0)
+        COALESCE(SUM(CASE WHEN m.tipo='ENTRADA'
+            THEN m.precio_costo_momento * m.cantidad ELSE 0 END), 0)
             AS ingresado,
 
-        COALESCE(SUM(CASE WHEN tipo='SALIDA'
+        COALESCE(SUM(CASE WHEN m.tipo='SALIDA'
             AND {SQL_ES_VENTA} AND {SQL_NO_ANULADA}
-            THEN (precio_unitario_momento - rebaja) * cantidad
+            THEN (m.precio_unitario_momento - m.rebaja) * m.cantidad
             ELSE 0 END), 0)
             AS vendido,
 
-        COALESCE(SUM(CASE WHEN tipo='SALIDA'
+        COALESCE(SUM(CASE WHEN m.tipo='SALIDA'
             AND {SQL_ES_VENTA} AND {SQL_NO_ANULADA}
-            THEN precio_costo_momento * cantidad
+            THEN m.precio_costo_momento * m.cantidad
             ELSE 0 END), 0)
             AS costo_vendido,
 
-        COUNT(CASE WHEN tipo='ENTRADA' THEN 1 END) AS n_entradas,
-        COALESCE(SUM(CASE WHEN tipo='ENTRADA'
-            THEN cantidad ELSE 0 END), 0) AS cant_entradas,
+        COUNT(CASE WHEN m.tipo='ENTRADA' THEN 1 END) AS n_entradas,
+        COALESCE(SUM(CASE WHEN m.tipo='ENTRADA'
+            THEN m.cantidad ELSE 0 END), 0) AS cant_entradas,
 
-        COUNT(CASE WHEN tipo='SALIDA'
+        COUNT(CASE WHEN m.tipo='SALIDA'
             AND {SQL_ES_VENTA} AND {SQL_NO_ANULADA}
             THEN 1 END) AS n_ventas,
-        COALESCE(SUM(CASE WHEN tipo='SALIDA'
+        COALESCE(SUM(CASE WHEN m.tipo='SALIDA'
             AND {SQL_ES_VENTA} AND {SQL_NO_ANULADA}
-            THEN cantidad ELSE 0 END), 0) AS cant_ventas
+            THEN m.cantidad ELSE 0 END), 0) AS cant_ventas
     FROM movimientos m
-    WHERE fecha >= ? AND fecha < ?{filtro}
+    JOIN productos p ON p.id = m.producto_id
+    WHERE m.fecha >= ? AND m.fecha < ?{filtro}
+      AND {SQL_NO_INVENTARIO}
     """
 
     with get_conn() as conn:
@@ -210,6 +206,10 @@ def top_productos_vendidos(local_id, desde: str, hasta: str,
         "JOIN ordenes_venta o ON o.id = oi.orden_id "
         "WHERE o.fecha >= ? AND o.fecha < ? "
         "  AND o.estado <> 'anulada'" + filtro +
+        "  AND LOWER(COALESCE(oi.nombre,'')) NOT LIKE 'fondo%' "
+        "  AND LOWER(COALESCE(oi.nombre,'')) NOT LIKE 'dinero%' "
+        "  AND LOWER(COALESCE(oi.nombre,'')) NOT LIKE 'efectivo%' "
+        "  AND LOWER(COALESCE(oi.nombre,'')) NOT LIKE 'caja%' "
         " GROUP BY oi.nombre "
         " ORDER BY cantidad DESC, total DESC "
         " LIMIT ?"
@@ -261,9 +261,6 @@ def productos_estancados(local_id, dias: int = 30,
     """
     Productos activos con stock > 0 que NO han tenido venta real
     en los últimos `dias`.
-
-    Venta real = SALIDA con motivo en VENTA_MOTIVOS ('Venta' o
-    'Combos') y que NO pertenezca a una orden anulada.
     """
     fecha_limite = (datetime.now() - timedelta(days=dias)).strftime(
         "%Y-%m-%d %H:%M:%S")
@@ -280,6 +277,7 @@ def productos_estancados(local_id, dias: int = 30,
         "       p.precio_unitario, p.precio_costo "
         "FROM productos p "
         "WHERE p.activo = 1 AND p.stock > 0" + filtro +
+        f" AND {SQL_NO_INVENTARIO} "
         f" AND NOT EXISTS ("
         f"   SELECT 1 FROM movimientos m "
         f"   WHERE m.producto_id = p.id "
@@ -307,13 +305,12 @@ def productos_estancados(local_id, dias: int = 30,
 def productos_stock_critico(local_id, limite: int = 15) -> list[dict]:
     """
     Productos activos con stock bajo (color rojo según sus umbrales).
-    El cálculo de color lo hace `inventario.color_de_producto`;
-    aquí solo filtramos la lista.
     """
     import inventario as inv
     prods = inv.listar_productos(local_id, solo_activos=True)
     criticos = [p for p in prods
-                if inv.color_de_producto(p) == "rojo"]
+                if inv.color_de_producto(p) == "rojo"
+                and not inv.es_no_inventario(p["nombre"])]
     criticos.sort(key=lambda p: (
         float(p["stock"] or 0),
         -float(p["precio_unitario"] or 0),
@@ -324,26 +321,23 @@ def productos_stock_critico(local_id, limite: int = 15) -> list[dict]:
 # ═══════════════════════════════════════════════════════════
 # Compatibilidad con código antiguo
 # ═══════════════════════════════════════════════════════════
-# FIX: todas estas funciones usaban `='venta'` y por tanto NO
-# contaban las ventas nuevas con motivo 'Combos'. Ahora usan
-# SQL_ES_VENTA_SIN_ALIAS.
 
 def ingresado_periodo(local_id, desde, hasta) -> float:
     return _one_sum(local_id, desde, hasta,
-                    "tipo='ENTRADA'",
-                    "precio_costo_momento * cantidad")
+                    "m.tipo='ENTRADA'",
+                    "m.precio_costo_momento * m.cantidad")
 
 
 def vendido_periodo(local_id, desde, hasta) -> float:
     return _one_sum(local_id, desde, hasta,
-                    "tipo='SALIDA' AND " + SQL_ES_VENTA_SIN_ALIAS,
-                    "(precio_unitario_momento - rebaja) * cantidad")
+                    "m.tipo='SALIDA' AND " + SQL_ES_VENTA,
+                    "(m.precio_unitario_momento - m.rebaja) * m.cantidad")
 
 
 def costo_vendido_periodo(local_id, desde, hasta) -> float:
     return _one_sum(local_id, desde, hasta,
-                    "tipo='SALIDA' AND " + SQL_ES_VENTA_SIN_ALIAS,
-                    "precio_costo_momento * cantidad")
+                    "m.tipo='SALIDA' AND " + SQL_ES_VENTA,
+                    "m.precio_costo_momento * m.cantidad")
 
 
 def ganancia_periodo(local_id, desde, hasta) -> float:
@@ -359,27 +353,29 @@ def porcentaje_ganancia_periodo(local_id, desde, hasta) -> float:
 
 
 def entradas_periodo(local_id, desde, hasta) -> dict:
-    return _one_count(local_id, desde, hasta, "tipo='ENTRADA'")
+    return _one_count(local_id, desde, hasta, "m.tipo='ENTRADA'")
 
 
 def ventas_periodo(local_id, desde, hasta) -> dict:
     return _one_count(local_id, desde, hasta,
-                      "tipo='SALIDA' AND " + SQL_ES_VENTA_SIN_ALIAS)
+                      "m.tipo='SALIDA' AND " + SQL_ES_VENTA)
 
 
 def otras_salidas_periodo(local_id, desde, hasta) -> dict:
     return _one_count(local_id, desde, hasta,
-                      "tipo='SALIDA' AND NOT ("
-                      + SQL_ES_VENTA_SIN_ALIAS + ")")
+                      "m.tipo='SALIDA' AND NOT ("
+                      + SQL_ES_VENTA + ")")
 
 
 def ventas_sin_costo(local_id, desde, hasta) -> int:
     f, p = _filtro(local_id, desde, hasta)
-    sql = ("SELECT COUNT(*) AS n FROM movimientos "
-           "WHERE tipo='SALIDA' "
-           f"AND {SQL_ES_VENTA_SIN_ALIAS} "
-           "AND fecha >= ? AND fecha < ? "
-           "AND precio_costo_momento <= 0" + f)
+    sql = ("SELECT COUNT(*) AS n FROM movimientos m "
+           "JOIN productos p ON p.id = m.producto_id "
+           "WHERE m.tipo='SALIDA' "
+           f"AND {SQL_ES_VENTA} "
+           "AND m.fecha >= ? AND m.fecha < ? "
+           "AND m.precio_costo_momento <= 0" + f +
+           f" AND {SQL_NO_INVENTARIO}")
     with get_conn() as conn:
         return int(conn.execute(sql, tuple(p)).fetchone()["n"] or 0)
 
@@ -391,14 +387,17 @@ def ventas_sin_costo(local_id, desde, hasta) -> int:
 def _filtro(local_id, desde, hasta):
     if local_id is None or local_id == GENERAL_ID:
         return "", [desde, hasta]
-    return " AND local_id=?", [desde, hasta, local_id]
+    return " AND m.local_id=?", [desde, hasta, local_id]
 
 
 def _one_sum(local_id, desde, hasta, where, expr):
     f, p = _filtro(local_id, desde, hasta)
     sql = (f"SELECT COALESCE(SUM({expr}), 0) AS t "
-           f"FROM movimientos WHERE {where} "
-           f"AND fecha >= ? AND fecha < ?{f}")
+           f"FROM movimientos m "
+           f"JOIN productos p ON p.id = m.producto_id "
+           f"WHERE {where} "
+           f"AND m.fecha >= ? AND m.fecha < ?{f} "
+           f"AND {SQL_NO_INVENTARIO}")
     with get_conn() as conn:
         return float(conn.execute(sql, tuple(p)).fetchone()["t"] or 0)
 
@@ -406,12 +405,14 @@ def _one_sum(local_id, desde, hasta, where, expr):
 def _one_count(local_id, desde, hasta, where):
     f, p = _filtro(local_id, desde, hasta)
     sql = (f"SELECT COUNT(*) AS n, "
-        f"COALESCE(SUM(cantidad),0) AS cant "
-        f"FROM movimientos WHERE {where} "
-        f"AND fecha >= ? AND fecha < ?{f}")
+           f"COALESCE(SUM(m.cantidad),0) AS cant "
+           f"FROM movimientos m "
+           f"JOIN productos p ON p.id = m.producto_id "
+           f"WHERE {where} "
+           f"AND m.fecha >= ? AND m.fecha < ?{f} "
+           f"AND {SQL_NO_INVENTARIO}")
     with get_conn() as conn:
         row = conn.execute(sql, tuple(p)).fetchone()
     return {"n": int(row["n"] or 0),
             "cantidad": float(row["cant"] or 0)}
-
-
+    

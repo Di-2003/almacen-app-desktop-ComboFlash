@@ -1,28 +1,15 @@
 """
 Excel sync — Almacén Combos Flash.
-
-Genera 3 tipos de Excel:
-  - generar_excel_bytes()          → inventario completo multi-hoja
-  - generar_excel_diario()         → movimientos del día (1 hoja/local)
-  - generar_excel_salidas_hoy()    → 3 tablas lado a lado por local
-
-Reglas de negocio:
-  - "Venta" = SALIDA con motivo 'combos' o 'venta' (case-insensitive)
-  - Fondo CUP/USD: productos cuyo nombre empieza con "fondo" — se
-    excluyen del cálculo de ventas y se muestran aparte.
-  - Órdenes anuladas: sus movimientos no aparecen.
-  - Merma: solo BAJA, o SALIDA con motivo 'merma'. 'error' NO es merma.
 """
 import io
 from datetime import datetime
-from operator import inv
-
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
 from db import get_conn, GENERAL_ID
 import locales as loc
+import inventario as inv  # <--- IMPORT CORREGIDO AQUÍ
 
 
 # ══════════════════════════════════════════════════════════
@@ -380,20 +367,15 @@ def _hoja_resumen_inventario(ws, locales):
     fila = FILA_HEADER
     tot_inv = tot_ven = tot_mar = 0.0
     tot_prod = 0
-    tot_fondos_val = 0.0
 
     for local in locales:
         fila += 1
         prod = _cargar_productos_local(local["id"])
 
-        # Separar fondos/no-inventario del inventario real.
-        productos_reales = []
-        fondos = []
-        for p in prod:
-            if inv.es_no_inventario(p.get("nombre")):
-                fondos.append(p)
-            else:
-                productos_reales.append(p)
+        # EXCLUSIÓN SILENCIOSA: Separar fondos, no mostrarlos en la tabla.
+        productos_reales = [
+            p for p in prod if not inv.es_no_inventario(p.get("nombre"))
+        ]
 
         inv_t = sum(float(p["precio_costo"] or 0)
                     * float(p["stock"] or 0) for p in productos_reales)
@@ -402,11 +384,11 @@ def _hoja_resumen_inventario(ws, locales):
         mar_t = ven_t - inv_t
         mar_pct = (mar_t / inv_t * 100) if inv_t > 0 else 0.0
         n = len(productos_reales)
-        tot_inv += inv_t; tot_ven += ven_t; tot_mar += mar_t; tot_prod += n
-
-        val_fondos = sum(float(p["precio_costo"] or 0)
-                         * float(p["stock"] or 0) for p in fondos)
-        tot_fondos_val += val_fondos
+        
+        tot_inv += inv_t
+        tot_ven += ven_t
+        tot_mar += mar_t
+        tot_prod += n
 
         valores = [local["nombre"], _r2(inv_t), _r2(ven_t),
                    _r2(mar_t), _r2(mar_pct), n]
@@ -421,15 +403,6 @@ def _hoja_resumen_inventario(ws, locales):
                 c.alignment = _ALIGN_RIGHT
                 c.number_format = _NUM_2DEC
 
-        # Nota informativa en la fila del local si tiene fondos
-        if fondos:
-            c_nota = ws.cell(
-                row=fila, column=7,
-                value=f"+ {len(fondos)} fondo(s) excluido(s): "
-                      f"${_r2(val_fondos):,.2f}")
-            c_nota.font = _FONT_ITALIC_GREY
-            c_nota.alignment = _ALIGN_LEFT
-
     fila += 1
     tot_pct = (tot_mar / tot_inv * 100) if tot_inv > 0 else 0.0
     _fila_total(ws, fila, "TOTAL", {
@@ -440,36 +413,31 @@ def _hoja_resumen_inventario(ws, locales):
         6: (tot_prod, None),
     }, col_ini=1, col_fin=6, fill=_FILL_TOTAL)
 
-    if tot_fondos_val > 0.01:
-        c_nota = ws.cell(
-            row=fila, column=7,
-            value=f"+ Fondos excluidos: ${_r2(tot_fondos_val):,.2f}")
-        c_nota.font = _FONT_BOLD_TITULO
-        c_nota.alignment = _ALIGN_LEFT
-
-    _anchos(ws, [26, 16, 20, 16, 12, 12, 40])
+    _anchos(ws, [26, 16, 20, 16, 12, 12])
     ws.freeze_panes = f"A{FILA_HEADER + 1}"
     ws.auto_filter.ref = f"A{FILA_HEADER}:F{fila}"
 
 
 def _hoja_productos_local(ws, local, productos):
-    _titulo_hoja(ws, 11,
+    _titulo_hoja(ws, 10,
                  f"{local['nombre']} — "
                  f"{datetime.now().strftime('%Y-%m-%d %H:%M')}")
     FILA_HEADER = 3
     _encabezado(ws, FILA_HEADER, [
-        "Tipo", "Código", "Producto", "Stock", "Moneda",
+        "Código", "Producto", "Stock", "Moneda",
         "Costo CUP", "Precio Venta CUP",
         "Costo Total", "Venta Total", "Margen", "Margen %",
     ])
 
     inv_total = venta_total = margen_total = 0.0
-    fondos_val = 0.0
     fila = FILA_HEADER
     n_alerta = 0
-    n_fondos = 0
 
     for p in productos:
+        # EXCLUSIÓN SILENCIOSA: No mostrar los fondos en la lista de productos
+        if inv.es_no_inventario(p.get("nombre")):
+            continue
+
         fila += 1
         stock = float(p["stock"] or 0)
         pc_cup = float(p.get("precio_costo", 0) or 0)
@@ -481,81 +449,53 @@ def _hoja_productos_local(ws, local, productos):
         margen = pv_tot - pc_tot
         margen_pct = (margen / pc_tot * 100) if pc_tot > 0 else 0.0
 
-        es_fondo = inv.es_no_inventario(p.get("nombre"))
+        alerta = (pc_cup > 0.001 and pu_cup < 0.001)
+        if alerta:
+            n_alerta += 1
 
-        if es_fondo:
-            tipo_txt = "Fondo"
-            n_fondos += 1
-            fondos_val += pc_tot
-        else:
-            tipo_txt = "Producto"
-            inv_total += pc_tot
-            venta_total += pv_tot
-            margen_total += margen
-            # Alerta solo para inventario real
-            alerta = (pc_cup > 0.001 and pu_cup < 0.001)
-            if alerta:
-                n_alerta += 1
-
+        inv_total += pc_tot
+        venta_total += pv_tot
+        margen_total += margen
         moneda_txt = f"{mc}/{mv}" if mc != mv else mc
 
         valores = [
-            tipo_txt, p.get("codigo") or "", p["nombre"], stock,
-            moneda_txt, _r2(pc_cup), _r2(pu_cup), _r2(pc_tot),
-            _r2(pv_tot), _r2(margen), _r2(margen_pct),
+            p.get("codigo") or "", p["nombre"], stock, moneda_txt,
+            _r2(pc_cup), _r2(pu_cup), _r2(pc_tot), _r2(pv_tot),
+            _r2(margen), _r2(margen_pct),
         ]
         for col, val in enumerate(valores, 1):
             c = ws.cell(row=fila, column=col, value=val)
             c.border = BORDE_FINO
-            if es_fondo:
-                c.fill = PatternFill("solid", fgColor="FFE8E8E8")
-                if col == 1:
-                    c.font = _FONT_ITALIC_GREY
-            else:
-                if col == 1:
-                    c.font = Font(bold=True, color="FF166534", size=9)
-                if (pc_cup > 0.001 and pu_cup < 0.001):
-                    c.fill = _FILL_ALERTA
-            if col in (1, 2, 4, 5):
+            if alerta:
+                c.fill = _FILL_ALERTA
+            if col in (1, 3, 4):
                 c.alignment = _ALIGN_CENTER
-            elif col >= 6:
+            elif col >= 5:
                 c.alignment = _ALIGN_RIGHT
                 c.number_format = _NUM_2DEC
             else:
                 c.alignment = _ALIGN_LEFT
 
     fila_tot = fila + 1
-    _fila_total(ws, fila_tot, "TOTAL INVENTARIO", {
-        8: (_r2(inv_total), _NUM_2DEC),
-        9: (_r2(venta_total), _NUM_2DEC),
-        10: (_r2(margen_total), _NUM_2DEC),
-    }, col_ini=1, col_fin=11, fill=_FILL_TOTAL)
-
-    if n_fondos > 0:
-        fila_fondos = fila_tot + 1
-        c = ws.cell(
-            row=fila_fondos, column=1,
-            value=f"Fondos/no-inventario excluidos: {n_fondos} "
-                  f"(${_r2(fondos_val):,.2f})")
-        c.font = _FONT_ITALIC_GREY
-        ws.merge_cells(start_row=fila_fondos, start_column=1,
-                       end_row=fila_fondos, end_column=11)
+    _fila_total(ws, fila_tot, "TOTALES", {
+        7: (_r2(inv_total), _NUM_2DEC),
+        8: (_r2(venta_total), _NUM_2DEC),
+        9: (_r2(margen_total), _NUM_2DEC),
+    }, col_ini=1, col_fin=10, fill=_FILL_TOTAL)
 
     ws["A2"] = (f"Invertido: ${inv_total:,.2f}   |   "
                 f"Venta: ${venta_total:,.2f}   |   "
                 f"Margen: ${margen_total:,.2f}"
                 + (f"   |   ⚠️ {n_alerta} sin precio de venta"
-                   if n_alerta else "")
-                + (f"   |   {n_fondos} fondo(s) excluido(s)"
-                   if n_fondos else ""))
+                   if n_alerta else ""))
     ws["A2"].font = Font(bold=True, size=10,
                          color=(COLOR_MERMA if n_alerta else COLOR_TITULO))
-    ws.merge_cells("A2:K2")
+    ws.merge_cells("A2:J2")
     ws.row_dimensions[2].height = 20
 
-    _anchos(ws, [10, 14, 32, 10, 12, 14, 16, 14, 14, 14, 10])
+    _anchos(ws, [14, 32, 10, 12, 14, 16, 14, 14, 14, 10])
     ws.freeze_panes = f"A{FILA_HEADER + 1}"
-    ws.auto_filter.ref = f"A{FILA_HEADER}:K{fila}"
+    ws.auto_filter.ref = f"A{FILA_HEADER}:J{fila}"
 
 
 def _hoja_movs_local(ws, local, movs):
