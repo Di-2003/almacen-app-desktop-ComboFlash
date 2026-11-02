@@ -14,16 +14,30 @@ FIX 1 (POS ↔ Historial):
   La sincronización en sentido inverso ya la hace `ventas.editar_items_orden`
   (regenera los movimientos SALIDA de la orden).
 
-FIX 2 (promedio ponderado condicional):
-  Si el producto NO tenía precio (>0) en un campo, el nuevo precio se
-  fija directamente. Solo se promedia cuando YA existía un precio > 0.
-  Aplica por separado a costo y a venta.
+FIX 2 (promedio condicional en el COSTO):
+  Si el producto NO tenía precio de COSTO (>0), el nuevo costo se fija
+  directamente. Solo se promedia cuando YA existía un costo > 0.
 
 FIX 3 (stock negativo transitorio al editar):
   Al editar un movimiento, el sistema primero revierte el movimiento
   original (lo que puede dejar el stock en negativo temporalmente) y
   luego aplica el nuevo. El error de "stock negativo" ahora se ignora
   durante esa reversión para permitir que la edición termine bien.
+
+FIX 4 (precio de VENTA no se promedia):
+  El precio de venta es una DECISIÓN DE NEGOCIO, no un costo. Cuando
+  se envía `precio_unitario` en una entrada, se fija directo (reemplaza
+  el vigente). Solo el costo se promedia condicionalmente.
+
+FIX 5 (histórico del movimiento guarda el costo del LOTE):
+  `movimientos.precio_costo_momento` de una ENTRADA guarda el costo
+  de ESE lote, no el promedio. El promedio vive en `productos.precio_costo`
+  y es lo que se usa para valorar el inventario actual.
+
+FIX 6 (fallback en totales_local):
+  Si un producto tiene stock pero `precio_costo = 0` (nunca se le
+  registró costo), se usa `precio_unitario` como fallback para el
+  cálculo de `invertido`. Así el total invertido no aparece en $0.
 """
 import re
 import uuid
@@ -632,6 +646,8 @@ def registrar_entrada(nombre: str, cantidad, usuario, local_id: int,
             pu_orig = pu_in or 0.0
             pc_cup = a_cup(pc_orig, mc)
             pu_cup = a_cup(pu_orig, mv)
+            # Producto nuevo: el histórico del movimiento guarda
+            # exactamente el costo del lote recibido.
             pc_momento = pc_cup
             cur = conn.execute(
                 "INSERT INTO productos("
@@ -667,10 +683,12 @@ def registrar_entrada(nombre: str, cantidad, usuario, local_id: int,
             mc = (prod["moneda_costo"] or "CUP").upper()
             mv = (prod["moneda_venta"] or "CUP").upper()
 
-            # ─────────── FIX 2: promedio condicional ───────────
-            # Regla: si el producto YA tenía un precio > 0 en ese
-            # campo, se promedia. Si no (era 0), el nuevo precio se
-            # fija directamente.
+            # ─────────── FIX 2 + FIX 5: costo ───────────
+            # Regla del COSTO: si el producto YA tenía un costo > 0,
+            # se promedia ponderado. Si era 0, el nuevo costo se fija
+            # directo. En ambos casos el histórico del movimiento
+            # guarda el costo del LOTE (`pc_orig_nuevo`), no el
+            # promedio — eso es lo que quieres ver en el Excel.
             if pc_in is not None:
                 pc_orig_nuevo = convertir(pc_in, moneda, mc)
                 stock_antes = float(prod["stock"] or 0)
@@ -686,27 +704,24 @@ def registrar_entrada(nombre: str, cantidad, usuario, local_id: int,
                     "precio_costo_orig=?, fecha_ultima_mod=? WHERE id=?",
                     (pc_cup, pc_orig, fecha, pid),
                 )
-                pc_momento = pc_cup
+                # FIX 5: lo que va al movimiento es el costo del LOTE.
+                pc_momento = a_cup(pc_orig_nuevo, mc)
             else:
                 pc_momento = float(prod["precio_costo"] or 0)
 
+            # ─────────── FIX 4: precio de VENTA directo ───────────
+            # El precio de venta NO se promedia. Es una decisión de
+            # negocio: cuando envías uno nuevo, reemplaza al vigente.
             if pu_in is not None:
                 pu_orig_nuevo = convertir(pu_in, moneda, mv)
-                stock_antes_pu = float(prod["stock"] or 0)
-                pu_orig_antes = float(prod["precio_unitario_orig"] or 0)
-                if pu_orig_antes <= 0.001:
-                    pu_orig = pu_orig_nuevo
-                else:
-                    pu_orig = _promedio_ponderado(
-                        stock_antes_pu, pu_orig_antes,
-                        cantidad, pu_orig_nuevo)
+                pu_orig = pu_orig_nuevo
                 pu_cup = a_cup(pu_orig, mv)
                 conn.execute(
                     "UPDATE productos SET precio_unitario=?, "
                     "precio_unitario_orig=?, fecha_ultima_mod=? WHERE id=?",
                     (pu_cup, pu_orig, fecha, pid),
                 )
-            # ─────────── FIN FIX 2 ───────────
+            # ─────────── FIN FIX 4/5 ───────────
 
             if categoria_id is not None:
                 conn.execute(
@@ -1288,20 +1303,41 @@ def productos_por_categoria(local_id, categoria_id):
 # ================= TOTALES (cacheados) =================
 
 def totales_local(local_id) -> dict:
+    """
+    Totales del inventario del local.
+
+    FIX 6: si un producto tiene stock pero `precio_costo = 0`
+    (nunca se le registró costo), se usa `precio_unitario` como
+    fallback para el cálculo de `invertido`. Así el total invertido
+    refleja el valor del inventario aunque el costo no se haya
+    capturado.
+
+    El campo `invertido` sigue siendo (coste × stock) cuando el
+    coste existe (>0). El fallback solo aplica a los productos con
+    coste=0 y venta>0. Se añade `n_sin_costo` como dato informativo
+    (cuántos productos usaron el fallback).
+    """
     key = ("totales_local", local_id)
 
     def _producer():
         productos = listar_productos(local_id, solo_activos=True)
         invertido = 0.0
         venta_total = 0.0
+        n_sin_costo = 0
         for p in productos:
             s = float(p["stock"] or 0)
-            invertido += float(p["precio_costo"] or 0) * s
-            venta_total += float(p["precio_unitario"] or 0) * s
+            pc = float(p["precio_costo"] or 0)
+            pu = float(p["precio_unitario"] or 0)
+            if pc <= 0.001 and pu > 0.001:
+                n_sin_costo += 1
+                pc = pu  # fallback
+            invertido += pc * s
+            venta_total += pu * s
         return {
             "invertido": invertido,
             "venta_total": venta_total,
             "diferencia": venta_total - invertido,
+            "n_sin_costo": n_sin_costo,
         }
 
     return _cached(key, _producer)
@@ -1318,8 +1354,6 @@ def totales_por_concepto(local_id) -> dict:
             params.append(local_id)
 
         # FIX: aceptar 'venta' y 'combos' (case-insensitive).
-        # Antes solo contaba 'venta' y las ventas nuevas con
-        # motivo 'Combos' no aparecían en el resumen.
         _SQL_VENTA = (
             "LOWER(TRIM(COALESCE(motivo,''))) IN ('venta','combos')"
         )

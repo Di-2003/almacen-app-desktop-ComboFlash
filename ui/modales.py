@@ -103,15 +103,31 @@ def abrir_detalle_producto(app, prod, on_refresh=None):
             border_radius=10, expand=True,
         )
 
-    sub_costo = (f"{inv.fmt_precio(pc_orig)} {mc}"
-                 if mc != "CUP" else "")
-    sub_venta = (f"{inv.fmt_precio(pu_orig)} {mv}"
-                 if mv != "CUP" else "")
+    # ── Defecto 3 FIX: precios en moneda de VISUALIZACIÓN ──
+    # `mostrar_precio` convierte según `moneda_visualizacion` y
+    # pinta el símbolo correcto (USD$, €, $).
+    precio_costo_txt = inv.mostrar_precio(pc_cup)
+    precio_venta_txt = inv.mostrar_precio(pu_cup)
+
+    # Sub: monto ORIGINAL en la divisa de captura, solo si es
+    # distinta de CUP y de la visualización actual.
+    vis_actual = inv.get_moneda_visualizacion()
+
+    def _sub_orig(orig_val, mo):
+        mo = (mo or "CUP").upper()
+        if mo == "CUP" or mo == vis_actual:
+            return ""
+        if float(orig_val or 0) <= 0.001:
+            return ""
+        return f"{inv.fmt_precio(orig_val)} {mo}"
+
+    sub_costo = _sub_orig(pc_orig, mc)
+    sub_venta = _sub_orig(pu_orig, mv)
 
     stats = ft.Row([
         _stat("Stock", inv.fmt_cantidad(prod["stock"])),
-        _stat("Costo", f"${inv.fmt_precio(pc_cup)}", sub_costo),
-        _stat("Venta", f"${inv.fmt_precio(pu_cup)}", sub_venta),
+        _stat("Costo", precio_costo_txt, sub_costo),
+        _stat("Venta", precio_venta_txt, sub_venta),
     ], spacing=8)
 
     contenido = [cabecera, ft.Container(height=2), stats]
@@ -265,6 +281,7 @@ def abrir_detalle_producto(app, prod, on_refresh=None):
 
     page.show_dialog(bottom_sheet(
         ft.Column(contenido, spacing=6, tight=True), page=page))
+
 
 
 def _tile(icono, color_bg, label, on_click):

@@ -871,19 +871,133 @@ def test_convertir_tasa_cero_no_divide():
     inv.set_config("tasa_usd", "1.0")
 
 
+def _nombre_test_unico(prefijo: str) -> str:
+    """Nombre+código únicos por ejecución para tests herméticos."""
+    import time
+    suf = str(int(time.time() * 1000000))[-9:]
+    nombre = f"{prefijo}_{suf}"
+    codigo = f"FZ{suf[-4:]}"
+    return nombre, codigo
+
+
 def test_promedio_ponderado_en_entrada():
+    """
+    El COSTO sí se promedia condicionalmente cuando ya había un
+    costo > 0.
+
+      - 1ª entrada (producto nuevo): precio_costo queda en 10.0
+      - 2ª entrada (producto existente, costo>0):
+        promedio = (100*10 + 50*13) / 150 = 11.0
+
+    IMPORTANTE: usa nombre+código ÚNICOS por ejecución para que
+    ningún dato residual de un run previo pueda alterar el promedio.
+    """
+    nombre, codigo = _nombre_test_unico("ProdProm")
     a = loc.obtener_almacen()
-    _crear_entrada("Prod Promedio", 100, codigo="FA8000",
-                   precio_costo=10)
-    p = inv.buscar_producto_por_nombre("Prod Promedio", a["id"])
-    assert p["precio_costo"] == 10
 
-    _crear_entrada("Prod Promedio", 50, codigo="FA8000",
-                   precio_costo=13)
-    p2 = inv.buscar_producto_por_nombre("Prod Promedio", a["id"])
-    esperado = (100 * 10 + 50 * 13) / 150
-    assert abs(p2["precio_costo"] - esperado) < 0.01
+    _crear_entrada(nombre, 100, codigo=codigo, precio_costo=10)
+    p = inv.buscar_producto_por_nombre(nombre, a["id"])
+    assert p is not None, "El producto no se creó."
 
+    stock1 = float(p["stock"])
+    assert stock1 == 100.0, (
+        f"BUG: tras 1ª entrada stock={stock1}, se esperaba 100. "
+        f"¿Producto duplicado por nombre reutilizado? "
+        f"Nombre usado: {nombre}")
+    pc1 = float(p["precio_costo"])
+    assert abs(pc1 - 10.0) < 0.01, (
+        f"Tras 1ª entrada se esperaba precio_costo=10.0, "
+        f"se obtuvo {pc1!r}.\n"
+        f"  stock             = {stock1!r}\n"
+        f"  precio_costo_orig = {p.get('precio_costo_orig')!r}\n"
+        f"  moneda_costo      = {p.get('moneda_costo')!r}\n"
+        f"  nombre usado      = {nombre!r}")
+
+    _crear_entrada(nombre, 50, codigo=codigo, precio_costo=13)
+    p2 = inv.buscar_producto_por_nombre(nombre, a["id"])
+    esperado = (100 * 10 + 50 * 13) / 150  # 11.0
+    pc2 = float(p2["precio_costo"])
+    assert abs(pc2 - esperado) < 0.01, (
+        f"Tras 2ª entrada se esperaba precio_costo={esperado}, "
+        f"se obtuvo {pc2!r}.\n"
+        f"  stock             = {p2.get('stock')!r}\n"
+        f"  precio_costo_orig = {p2.get('precio_costo_orig')!r}\n"
+        f"  moneda_costo      = {p2.get('moneda_costo')!r}")
+
+
+def test_precio_venta_no_promedia():
+    """
+    FIX 2: el precio de venta se DEFINE directo, no se promedia.
+    """
+    nombre, codigo = _nombre_test_unico("ProdPV")
+    a = loc.obtener_almacen()
+
+    _crear_entrada(nombre, 10, codigo=codigo,
+                   precio_costo=10, precio_unitario=20)
+    p = inv.buscar_producto_por_nombre(nombre, a["id"])
+    assert p is not None
+    assert abs(float(p["precio_unitario"]) - 20) < 0.01
+
+    # Segunda entrada con otro precio de venta: debe FIJARSE (30),
+    # no promediarse ((10*20 + 10*30) / 20 = 25).
+    _crear_entrada(nombre, 10, codigo=codigo,
+                   precio_costo=10, precio_unitario=30)
+    p2 = inv.buscar_producto_por_nombre(nombre, a["id"])
+    assert abs(float(p2["precio_unitario"]) - 30) < 0.01, (
+        f"BUG FIX 2: precio de venta se promedió a "
+        f"{p2['precio_unitario']}. Debería ser 30 (definido directo).")
+
+
+
+def test_movimiento_entrada_costo_lote():
+    """
+    FIX 1: el movimiento ENTRADA guarda el costo del LOTE en
+    `precio_costo_momento`, NO el promedio ponderado.
+    """
+    nombre, codigo = _nombre_test_unico("ProdCL")
+    a = loc.obtener_almacen()
+
+    _crear_entrada(nombre, 10, codigo=codigo, precio_costo=10)
+    _crear_entrada(nombre, 10, codigo=codigo, precio_costo=20)
+
+    p = inv.buscar_producto_por_nombre(nombre, a["id"])
+    # El producto tiene el promedio (10+20)/2 = 15
+    assert abs(float(p["precio_costo"]) - 15) < 0.01, (
+        f"El producto debería tener promedio 15, "
+        f"tiene {p['precio_costo']!r}")
+
+    # Los DOS movimientos ENTRADA deben tener el costo del lote:
+    # uno con 10, otro con 20. NINGUNO con 15.
+    movs = inv.listar_movimientos(
+        local_id=a["id"], producto_id=p["id"], limite=10)
+    entradas = [m for m in movs if m["tipo"] == "ENTRADA"]
+    assert len(entradas) == 2, (
+        f"Se esperaban 2 ENTRADAS, hay {len(entradas)}")
+    costos = sorted(round(float(m["precio_costo_momento"]), 2)
+                    for m in entradas)
+    assert costos == [10.0, 20.0], (
+        f"BUG FIX 1: los movimientos tienen costos {costos}. "
+        f"Deberían ser [10, 20] (costo del lote) y NUNCA [15, 15].")
+
+
+def test_totales_local_fallback_sin_costo():
+    """
+    FIX 4: si un producto tiene stock pero `precio_costo = 0`,
+    `totales_local.invertido` usa `precio_unitario` como fallback.
+    """
+    nombre, codigo = _nombre_test_unico("ProdFB")
+    a = loc.obtener_almacen()
+
+    _crear_entrada(nombre, 10, codigo=codigo, precio_unitario=100)
+    p = inv.buscar_producto_por_nombre(nombre, a["id"])
+    assert float(p["precio_costo"] or 0) == 0
+
+    t = inv.totales_local(a["id"])
+    assert t["invertido"] > 0, (
+        "BUG FIX 4: invertido=0 con producto que tiene venta>0 y "
+        "costo=0. El fallback no se aplicó.")
+    assert t.get("n_sin_costo", 0) >= 1, (
+        "BUG FIX 4: n_sin_costo debería ser >=1.")
 
 def test_recalcular_precios():
     inv.set_config("tasa_usd", "150")
@@ -891,6 +1005,40 @@ def test_recalcular_precios():
     assert n >= 0
     inv.set_config("tasa_usd", "1.0")
 
+def test_mostrar_precio_respeta_visualizacion():
+    """
+    Defecto 3 FIX: `mostrar_precio` respeta `moneda_visualizacion`.
+      - vis=CUP : "$ 1,000.00"
+      - vis=USD : "USD$ 10.00"   (1000 / 100)
+      - vis=EUR : "€ 7.69"       (1000 / 130)
+    """
+    inv.set_config("tasa_usd", "100")
+    inv.set_config("tasa_eur", "130")
+    try:
+        inv.set_moneda_visualizacion("CUP")
+        r = inv.mostrar_precio(1000)
+        assert r == "$ 1,000.00", (
+            f"vis=CUP: se esperaba '$ 1,000.00', se obtuvo {r!r}")
+
+        inv.set_moneda_visualizacion("USD")
+        r = inv.mostrar_precio(1000)
+        assert r == "USD$ 10.00", (
+            f"vis=USD: se esperaba 'USD$ 10.00', se obtuvo {r!r}")
+
+        inv.set_moneda_visualizacion("EUR")
+        r = inv.mostrar_precio(1000)
+        assert r.startswith("€"), (
+            f"vis=EUR: se esperaba empezar con '€', se obtuvo {r!r}")
+        assert "7.69" in r, (
+            f"vis=EUR: se esperaba '7.69' en {r!r}")
+
+        inv.set_moneda_visualizacion("USD")
+        assert inv.mostrar_precio(500) == "USD$ 5.00"
+        assert inv.mostrar_precio(1500) == "USD$ 15.00"
+    finally:
+        inv.set_moneda_visualizacion("CUP")
+        inv.set_config("tasa_usd", "1.0")
+        inv.set_config("tasa_eur", "1.0")
 
 # ═══════════════════════════════════════════════════════════
 # MÉTRICAS
@@ -3266,6 +3414,12 @@ TESTS = [
     ("Cantidad gigante",                test_cantidad_gigante),
     ("Cantidad decimal",                test_cantidad_decimal),
     ("Símbolo moneda",                  test_simbolo_moneda),
+    ("Promedio ponderado entrada",      test_promedio_ponderado_en_entrada),
+    ("Precio venta no se promedia",     test_precio_venta_no_promedia),
+    ("Movimiento guarda costo de lote", test_movimiento_entrada_costo_lote),
+    ("Totales local fallback sin costo", test_totales_local_fallback_sin_costo),
+    ("Recalcular precios",              test_recalcular_precios),
+    ("Mostrar precio respeta vis.",     test_mostrar_precio_respeta_visualizacion),
 ]
 
 
@@ -3333,3 +3487,4 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+    

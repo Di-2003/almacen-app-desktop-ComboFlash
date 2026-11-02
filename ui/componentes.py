@@ -9,7 +9,7 @@ def ruta_asset(nombre: str) -> str:
     if base:
         return str(Path(base) / nombre)
     raiz = Path(__file__).resolve().parent.parent
-    return str(raiz / "assets" / nombre)   # ← "recursos" → "assets"
+    return str(raiz / "assets" / nombre)
 
 
 def src_asset(nombre: str) -> str:
@@ -25,7 +25,6 @@ def imagen_opcional(nombre, fallback, width=None, height=None,
                     fit=ft.BoxFit.CONTAIN):
     try:
         if Path(ruta_asset(nombre)).exists():
-            # src es relativo a assets_dir → solo el nombre
             return ft.Image(src=src_asset(nombre), fit=fit,
                             width=width, height=height)
     except Exception:
@@ -97,6 +96,18 @@ def tarjeta_metrica(titulo, valor, subtitulo="", color=None, on_tap=None):
 
 
 def fila_producto(prod, on_tap=None) -> ft.Container:
+    """
+    Fila de producto.
+
+    Defecto 3 FIX: los precios (costo y venta) se pintan con
+    `inv.mostrar_precio(...)`, que convierte desde CUP a la
+    `moneda_visualizacion` configurada y aplica el símbolo correcto
+    (USD$ / € / $).
+
+    El subtítulo "orig. USD" solo aparece cuando el precio se capturó
+    originalmente en una divisa DISTINTA de CUP y de la visualización
+    actual (para no ser redundante).
+    """
     import inventario as inv
     color = inv.color_de_producto(prod)
     pc_cup = float(prod.get("precio_costo", 0) or 0)
@@ -106,6 +117,21 @@ def fila_producto(prod, on_tap=None) -> ft.Container:
     stock_txt = inv.fmt_cantidad(prod["stock"])
     codigo = (prod.get("codigo") or "").strip()
     esta_activo = prod.get("activo", 1) == 1
+
+    # ── Defecto 3 FIX: precio en moneda de visualización ──
+    precio_costo_txt = inv.mostrar_precio(pc_cup)
+    precio_venta_txt = inv.mostrar_precio(pu_cup)
+
+    vis_actual = inv.get_moneda_visualizacion()
+
+    def _sub_mo(mo):
+        mo = (mo or "CUP").upper()
+        if mo == "CUP" or mo == vis_actual:
+            return ""
+        return f"(orig. {mo})"
+
+    sub_costo = _sub_mo(mc)
+    sub_venta = _sub_mo(mv)
 
     cabecera = ft.Row(
         [
@@ -131,15 +157,12 @@ def fila_producto(prod, on_tap=None) -> ft.Container:
                                  color=es.COLOR_ACENTO))
         return ft.Column(hijos, spacing=2)
 
-    sub_costo = f"({mc})" if mc != "CUP" else ""
-    sub_venta = f"({mv})" if mv != "CUP" else ""
-
     fila_datos = ft.Row(
         [
             ft.Container(content=_dato("Stock", stock_txt), expand=True),
-            ft.Container(content=_dato("Costo", f"${inv.fmt_precio(pc_cup)}",
+            ft.Container(content=_dato("Costo", precio_costo_txt,
                                        sub_costo), expand=True),
-            ft.Container(content=_dato("Venta", f"${inv.fmt_precio(pu_cup)}",
+            ft.Container(content=_dato("Venta", precio_venta_txt,
                                        sub_venta), expand=True),
         ],
         spacing=0,
@@ -399,7 +422,6 @@ def cerrar_dialogo(page, control=None, on_close=None):
     try:
         page.run_task(_deferred)
     except Exception:
-        # Fallback sincrónico
         try:
             on_close()
         except Exception:
@@ -449,7 +471,6 @@ def mostrar_modal(page, contenido, on_close=None):
     Solo puede haber UN modal abierto a la vez: si hay otro, se cierra.
     Devuelve una función cerrar() para cerrarlo manualmente.
     """
-    # Cerrar cualquier modal anterior
     actual = getattr(page, "_modal_actual", None)
     if actual is not None:
         try:
@@ -481,7 +502,6 @@ def mostrar_modal(page, contenido, on_close=None):
         except Exception:
             pass
         if on_close is not None:
-            # Diferido para que el pop se aplique antes de abrir otro
             async def _deferred():
                 import asyncio
                 try:
@@ -506,9 +526,6 @@ def mostrar_modal(page, contenido, on_close=None):
         on_click=lambda e: cerrar(),
     )
 
-    # Contenedor del centro: expand=True, sin on_click
-    # Los clicks dentro del contenido van al contenido.
-    # Los clicks fuera (en la zona oscura) van al barrier.
     centro = ft.Container(
         content=contenido,
         alignment=ft.Alignment.CENTER,
@@ -528,7 +545,6 @@ def mostrar_modal(page, contenido, on_close=None):
 
 async def _copiar_async(page, texto) -> bool:
     """Copia texto al portapapeles probando los dos APIs de Flet."""
-    # API nuevo (Flet >= 0.27): page.clipboard.set() async
     try:
         clipboard = getattr(page, "clipboard", None)
         if clipboard is None:
@@ -540,7 +556,6 @@ async def _copiar_async(page, texto) -> bool:
     except Exception:
         pass
 
-    # API antiguo (por si acaso)
     try:
         page.set_clipboard(texto)
         return True
@@ -676,7 +691,8 @@ def _fila_sugerencia(item, on_pick, ocultar):
         on_click=click,
         ink=True,
     )
-    
+
+
 def dlg_destino_sobrante(page, sobrante_cup, callback):
     """
     Pregunta al usuario si el sobrante es vuelto o propina.
@@ -688,21 +704,29 @@ def dlg_destino_sobrante(page, sobrante_cup, callback):
         dlg.open = False
         page.update()
         callback("vuelto")
-        
+
     def set_propina(e):
         dlg.open = False
         page.update()
         callback("propina")
-    
+
     dlg.title = ft.Text("Sobrante de pago")
     dlg.content = ft.Column([
-        ft.Text(f"El pago supera el total por ${sobrante_cup:,.2f} CUP.", size=14, weight=ft.FontWeight.BOLD),
-        ft.Text("¿Qué desea hacer con este dinero extra?", size=13, color=es.COLOR_TEXTO_SUAVE),
+        ft.Text(f"El pago supera el total por ${sobrante_cup:,.2f} CUP.",
+                size=14, weight=ft.FontWeight.BOLD),
+        ft.Text("¿Qué desea hacer con este dinero extra?", size=13,
+                color=es.COLOR_TEXTO_SUAVE),
     ], tight=True, spacing=10)
     dlg.actions = [
-        ft.TextButton("Es Vuelto al Cliente", on_click=set_vuelto, icon=ft.Icons.MONEY_OFF, style=ft.ButtonStyle(color=es.COLOR_AMBAR)),
-        ft.FilledButton("Es Propina", on_click=set_propina, icon=ft.Icons.FAVORITE, style=ft.ButtonStyle(bgcolor=es.COLOR_EXITO, color="#ffffff")),
+        ft.TextButton("Es Vuelto al Cliente", on_click=set_vuelto,
+                      icon=ft.Icons.MONEY_OFF,
+                      style=ft.ButtonStyle(color=es.COLOR_AMBAR)),
+        ft.FilledButton("Es Propina", on_click=set_propina,
+                        icon=ft.Icons.FAVORITE,
+                        style=ft.ButtonStyle(
+                            bgcolor=es.COLOR_EXITO, color="#ffffff")),
     ]
     dlg.actions_alignment = ft.MainAxisAlignment.END
 
-    page.show_dialog(dlg)    
+    page.show_dialog(dlg)
+    
