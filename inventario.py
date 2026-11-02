@@ -1299,6 +1299,27 @@ def productos_por_categoria(local_id, categoria_id):
     return [p for p in listar_productos(local_id, solo_activos=True)
             if p.get("categoria_id") == categoria_id]
 
+# ================= NO-INVENTARIO (fondos, dinero, etc.) =================
+# Productos cuyo nombre empieza por alguno de estos prefijos NO se
+# cuentan como inventario en `totales_local` (ni en el Excel de resumen).
+# Siguen existiendo, se les da entrada/salida normal, y aparecen en POS.
+_PREFIJOS_NO_INVENTARIO = ("fondo", "dinero", "efectivo", "caja")
+
+
+def es_no_inventario(nombre) -> bool:
+    """
+    True si el nombre del producto corresponde a un 'no inventario'
+    (fondo de caja, dinero, efectivo, caja chica, etc.).
+
+    Solo afecta a los totales de inventario. La operación es idéntica
+    a cualquier otro producto: se da entrada/salida, se vende, se
+    traspasa, se da de baja.
+    """
+    n = (nombre or "").strip().lower()
+    if not n:
+        return False
+    return any(n.startswith(p) for p in _PREFIJOS_NO_INVENTARIO)
+
 
 # ================= TOTALES (cacheados) =================
 
@@ -1306,16 +1327,17 @@ def totales_local(local_id) -> dict:
     """
     Totales del inventario del local.
 
-    FIX 6: si un producto tiene stock pero `precio_costo = 0`
-    (nunca se le registró costo), se usa `precio_unitario` como
-    fallback para el cálculo de `invertido`. Así el total invertido
-    refleja el valor del inventario aunque el costo no se haya
-    capturado.
+    Defecto 3 FIX (moneda): los precios se muestran con `mostrar_precio`.
 
-    El campo `invertido` sigue siendo (coste × stock) cuando el
-    coste existe (>0). El fallback solo aplica a los productos con
-    coste=0 y venta>0. Se añade `n_sin_costo` como dato informativo
-    (cuántos productos usaron el fallback).
+    FIX 6 (fallback): si un producto tiene stock pero `precio_costo = 0`
+    (nunca se le registró costo), se usa `precio_unitario` como fallback
+    para el cálculo de `invertido`.
+
+    FIX 7 (no-inventario): los productos cuyo nombre empieza por
+    `fondo`, `dinero`, `efectivo` o `caja` NO se cuentan en
+    `invertido` / `venta_total` / `diferencia`. Se devuelven aparte
+    en `n_no_inventario` y `total_no_inventario` para que la UI
+    pueda mostrar "N fondos excluidos ($ Z)".
     """
     key = ("totales_local", local_id)
 
@@ -1324,20 +1346,32 @@ def totales_local(local_id) -> dict:
         invertido = 0.0
         venta_total = 0.0
         n_sin_costo = 0
+        n_no_inventario = 0
+        total_no_inventario = 0.0
         for p in productos:
             s = float(p["stock"] or 0)
             pc = float(p["precio_costo"] or 0)
             pu = float(p["precio_unitario"] or 0)
+
+            if es_no_inventario(p.get("nombre")):
+                # No cuenta como inventario; solo se acumula aparte.
+                n_no_inventario += 1
+                total_no_inventario += pc * s
+                continue
+
             if pc <= 0.001 and pu > 0.001:
                 n_sin_costo += 1
                 pc = pu  # fallback
             invertido += pc * s
             venta_total += pu * s
+
         return {
             "invertido": invertido,
             "venta_total": venta_total,
             "diferencia": venta_total - invertido,
             "n_sin_costo": n_sin_costo,
+            "n_no_inventario": n_no_inventario,
+            "total_no_inventario": total_no_inventario,
         }
 
     return _cached(key, _producer)

@@ -871,12 +871,28 @@ def test_convertir_tasa_cero_no_divide():
     inv.set_config("tasa_usd", "1.0")
 
 
+import itertools
+
+_TEST_SEQ = itertools.count(1)
 def _nombre_test_unico(prefijo: str) -> str:
-    """Nombre+código únicos por ejecución para tests herméticos."""
-    import time
-    suf = str(int(time.time() * 1000000))[-9:]
+    """
+    Nombre+código únicos por ejecución para tests herméticos.
+
+    Usa un contador global en vez de timestamp:
+      - Timestamp tiene colisiones (solo 10,000 sufijos posibles en
+        `FZxxxx`, y corremos 222 tests × 2 códigos = ~450).
+      - Contador monotónico garantiza unicidad dentro del run.
+      - `main()` limpia la BD al inicio, así que tampoco choca con
+        runs anteriores.
+
+    Rango `FC0001`–`FC9999`: el prefijo `FC` no lo usa ningún otro
+    test (`FA*`, `FB*`, `FZ9999` y `ZZ*` ya están tomados).
+    """
+    import itertools
+    n = next(_TEST_SEQ)
+    suf = f"{n:05d}"
     nombre = f"{prefijo}_{suf}"
-    codigo = f"FZ{suf[-4:]}"
+    codigo = f"FC{n:04d}"
     return nombre, codigo
 
 
@@ -998,6 +1014,84 @@ def test_totales_local_fallback_sin_costo():
         "costo=0. El fallback no se aplicó.")
     assert t.get("n_sin_costo", 0) >= 1, (
         "BUG FIX 4: n_sin_costo debería ser >=1.")
+
+
+def test_totales_local_excluye_no_inventario():
+    """
+    FIX 7: los productos cuyo nombre empieza por 'fondo', 'dinero',
+    'efectivo' o 'caja' NO se cuentan en `invertido` ni en
+    `venta_total`. Sí se devuelven aparte en `n_no_inventario` y
+    `total_no_inventario`.
+
+    Este test es relativo (delta) porque el almacén ya tiene
+    cientos de productos de tests anteriores; comparar contra una
+    cota absoluta siempre fallaría.
+    """
+    a = loc.obtener_almacen()
+    inv.invalidar_cache()
+
+    # 1. Estado inicial
+    t_antes = inv.totales_local(a["id"])
+    inv_antes = t_antes["invertido"]
+    no_inv_antes = t_antes["total_no_inventario"]
+    n_no_inv_antes = t_antes["n_no_inventario"]
+
+    # 2. Crear un "fondo" (no inventario)
+    nombre_fondo, codigo_fondo = _nombre_test_unico("FondoCUP")
+    nombre_fondo = "Fondo " + nombre_fondo
+    _crear_entrada(nombre_fondo, 100, codigo=codigo_fondo,
+                   precio_costo=10)
+    assert inv.es_no_inventario(nombre_fondo) is True, (
+        f"es_no_inventario('{nombre_fondo}') debería ser True")
+
+    # 3. Crear un producto normal (sí inventario)
+    nombre_real, codigo_real = _nombre_test_unico("ProdReal")
+    _crear_entrada(nombre_real, 10, codigo=codigo_real,
+                   precio_costo=20)
+    assert inv.es_no_inventario(nombre_real) is False, (
+        f"es_no_inventario('{nombre_real}') debería ser False")
+
+    # 4. Estado después
+    inv.invalidar_cache()
+    t_despues = inv.totales_local(a["id"])
+
+    # 5. invertido SOLO debe subir por el producto normal (10×20 = 200)
+    delta_inv = t_despues["invertido"] - inv_antes
+    assert abs(delta_inv - 200) < 0.01, (
+        f"invertido subió {delta_inv:.2f}, se esperaba 200.00 "
+        f"(solo el producto normal). El fondo está contaminando "
+        f"invertido.")
+
+    # 6. total_no_inventario debe subir por el fondo (100×10 = 1000)
+    delta_no_inv = (t_despues["total_no_inventario"]
+                    - no_inv_antes)
+    assert abs(delta_no_inv - 1000) < 0.01, (
+        f"total_no_inventario subió {delta_no_inv:.2f}, "
+        f"se esperaba 1000.00 (solo el fondo).")
+
+    # 7. El contador subió en 1
+    assert t_despues["n_no_inventario"] == n_no_inv_antes + 1, (
+        f"n_no_inventario esperado {n_no_inv_antes + 1}, "
+        f"es {t_despues['n_no_inventario']}")
+
+    # 8. Renombrar el fondo a algo que NO sea fondo → debe migrar
+    p = inv.buscar_producto_por_nombre(nombre_fondo, a["id"])
+    nuevo_nombre = nombre_real + "_noes_fondo"
+    inv.renombrar_producto(p["id"], nuevo_nombre, USR_ADMIN)
+    inv.invalidar_cache()
+
+    t_final = inv.totales_local(a["id"])
+    delta_inv_final = (t_final["invertido"]
+                       - t_despues["invertido"])
+    assert abs(delta_inv_final - 1000) < 0.01, (
+        f"Al renombrar el fondo, invertido debería subir 1000. "
+        f"Subió {delta_inv_final:.2f}.")
+
+    delta_no_inv_final = (t_final["total_no_inventario"]
+                         - t_despues["total_no_inventario"])
+    assert abs(delta_no_inv_final + 1000) < 0.01, (
+        f"Al renombrar el fondo, total_no_inventario debería "
+        f"bajar 1000. Cambió {delta_no_inv_final:.2f}.")
 
 def test_recalcular_precios():
     inv.set_config("tasa_usd", "150")
@@ -3420,6 +3514,7 @@ TESTS = [
     ("Totales local fallback sin costo", test_totales_local_fallback_sin_costo),
     ("Recalcular precios",              test_recalcular_precios),
     ("Mostrar precio respeta vis.",     test_mostrar_precio_respeta_visualizacion),
+    ("Totales local excluye no-inventario", test_totales_local_excluye_no_inventario),
 ]
 
 

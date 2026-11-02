@@ -53,7 +53,17 @@ def barra_navegacion(app, indice):
     )
 
 
-def _tarjeta_resumen(total, n_productos, n_rojo=0):
+def _tarjeta_resumen(total, n_productos, n_rojo=0,
+                     n_no_inventario=0, total_no_inventario=0.0):
+    """
+    Tarjeta del Inicio.
+
+    - `total` es el valor de inventario YA sin los no-inventario
+      (lo que devuelve `inv.totales_local()["invertido"]`).
+    - `n_no_inventario` / `total_no_inventario` son informativos:
+      se muestran como "N fondos excluidos ($ Z)" para que el
+      usuario entienda por qué el número no incluye esos productos.
+    """
     extras = []
     if n_rojo > 0:
         extras.append(
@@ -102,6 +112,28 @@ def _tarjeta_resumen(total, n_productos, n_rojo=0):
     )
 
     contenido = [fila_sup, ft.Container(height=6), fila_valor]
+
+    # ── Aviso de no-inventario excluido (solo si hay) ──
+    if n_no_inventario > 0:
+        contenido.append(ft.Container(height=4))
+        contenido.append(
+            ft.Row([
+                ft.Icon(ft.Icons.INFO_OUTLINE,
+                        size=12, color=es.COLOR_TEXTO_TENUE),
+                ft.Text(
+                    f"{n_no_inventario} fondo"
+                    f"{'s' if n_no_inventario != 1 else ''} "
+                    f"excluido"
+                    f"{'s' if n_no_inventario != 1 else ''} "
+                    f"(${total_no_inventario:,.2f})",
+                    size=10, color=es.COLOR_TEXTO_TENUE,
+                    max_lines=2,
+                    overflow=ft.TextOverflow.ELLIPSIS,
+                ),
+            ], spacing=4,
+                vertical_alignment=ft.CrossAxisAlignment.START),
+        )
+
     if extras:
         contenido += [ft.Container(height=6), ft.Row(extras, spacing=6)]
 
@@ -691,7 +723,9 @@ def vista_principal(app):
             n_rojo = sum(1 for p in productos
                          if inv.color_de_producto(p) == "rojo")
             contenedor_resumen.content = _tarjeta_resumen(
-                t["invertido"], total_filtrado, n_rojo)
+                t["invertido"], total_filtrado, n_rojo,
+                n_no_inventario=t.get("n_no_inventario", 0),
+                total_no_inventario=t.get("total_no_inventario", 0.0))
 
             if mounted(lista_cont):
                 lista_cont.update()
